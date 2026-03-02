@@ -1,0 +1,14 @@
+﻿{
+  "image_path": "test/test_capture.png",
+  "screen_left": 0,
+  "screen_top": 0,
+  "min_score": 0.35,
+  "threshold": 0.62,
+  "topk": 5,
+  "case_sensitive": false,
+  "position_tolerance_px": 35,
+  "warmup_runs": 1,
+  "measure_runs": 5,
+  "modes": ["gpu", "cpu"],
+  "ground_truth_path": "test/ground_truth.json"
+}

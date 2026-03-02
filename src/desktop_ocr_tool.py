@@ -4,6 +4,7 @@ import argparse
 import json
 import os
 import re
+import sys
 import time
 from dataclasses import dataclass, asdict
 from difflib import SequenceMatcher
@@ -39,12 +40,89 @@ class OCRItem:
 
 
 class DesktopOCRTool:
-    def __init__(self) -> None:
-        self.acceleration_mode, self.available_providers, runtime_kwargs = self._detect_runtime()
+    def __init__(self, use_gpu: bool = True) -> None:
+        self.use_gpu_requested = bool(use_gpu)
+        self._dll_dir_handles: list[Any] = []
+        self._bootstrap_windows_gpu_dll_paths()
+        self.acceleration_mode, self.available_providers, runtime_kwargs = self._detect_runtime(
+            use_gpu=self.use_gpu_requested
+        )
         self.ocr_engine = RapidOCR(**runtime_kwargs)
 
+    def _bootstrap_windows_gpu_dll_paths(self) -> None:
+        if os.name != "nt":
+            return
+        add_dll_dir = getattr(os, "add_dll_directory", None)
+        if add_dll_dir is None:
+            return
+
+        site_packages = Path(sys.prefix) / "Lib" / "site-packages"
+        nvidia_root = site_packages / "nvidia"
+        if not nvidia_root.exists():
+            return
+
+        bin_dirs: list[Path] = []
+        for child in nvidia_root.iterdir():
+            if not child.is_dir():
+                continue
+            bin_dir = child / "bin"
+            if bin_dir.exists() and bin_dir.is_dir():
+                bin_dirs.append(bin_dir.resolve())
+        if not bin_dirs:
+            return
+
+        current_path = os.environ.get("PATH", "")
+        path_parts = [p for p in current_path.split(";") if p]
+        path_set = {p.lower() for p in path_parts}
+        for dll_dir in bin_dirs:
+            dll_dir_str = str(dll_dir)
+            try:
+                handle = add_dll_dir(dll_dir_str)
+                self._dll_dir_handles.append(handle)
+            except Exception:
+                continue
+            if dll_dir_str.lower() not in path_set:
+                path_parts.insert(0, dll_dir_str)
+                path_set.add(dll_dir_str.lower())
+        os.environ["PATH"] = ";".join(path_parts)
+
     @staticmethod
-    def _detect_runtime() -> tuple[str, list[str], dict[str, Any]]:
+    def _is_gpu_provider(provider_name: str) -> bool:
+        gpu_providers = {
+            "CUDAExecutionProvider",
+            "DmlExecutionProvider",
+            "TensorrtExecutionProvider",
+            "ROCMExecutionProvider",
+            "MIGraphXExecutionProvider",
+            "CoreMLExecutionProvider",
+        }
+        return provider_name in gpu_providers
+
+    @staticmethod
+    def _safe_provider_list(obj: Any) -> list[str]:
+        if obj is None or not hasattr(obj, "get_providers"):
+            return []
+        try:
+            providers = obj.get_providers()
+        except Exception:
+            return []
+        if not isinstance(providers, (list, tuple)):
+            return []
+        return [str(p) for p in providers]
+
+    @classmethod
+    def _extract_component_providers(cls, component_engine: Any) -> list[str]:
+        if component_engine is None:
+            return []
+        # RapidOCR OrtInferSession wraps a native onnxruntime session in `.session`.
+        session = getattr(component_engine, "session", None)
+        wrapped = cls._safe_provider_list(session)
+        if wrapped:
+            return wrapped
+        return cls._safe_provider_list(component_engine)
+
+    @staticmethod
+    def _detect_runtime(*, use_gpu: bool = True) -> tuple[str, list[str], dict[str, Any]]:
         providers: list[str] = []
         kwargs: dict[str, Any] = {}
         mode = "cpu"
@@ -55,7 +133,7 @@ class DesktopOCRTool:
         except Exception:
             return mode, providers, kwargs
 
-        if "CUDAExecutionProvider" in providers:
+        if use_gpu and "CUDAExecutionProvider" in providers:
             mode = "cuda"
             kwargs.update(
                 {
@@ -66,7 +144,7 @@ class DesktopOCRTool:
             )
             return mode, providers, kwargs
 
-        if "DmlExecutionProvider" in providers:
+        if use_gpu and "DmlExecutionProvider" in providers:
             mode = "dml"
             kwargs.update(
                 {
@@ -83,9 +161,34 @@ class DesktopOCRTool:
         return mode, providers, kwargs
 
     def get_runtime_info(self) -> dict[str, Any]:
+        det_engine = getattr(getattr(self.ocr_engine, "text_det", None), "infer", None)
+        cls_engine = getattr(getattr(self.ocr_engine, "text_cls", None), "infer", None)
+        rec_engine = getattr(getattr(self.ocr_engine, "text_rec", None), "session", None)
+
+        component_providers = {
+            "det": self._extract_component_providers(det_engine),
+            "cls": self._extract_component_providers(cls_engine),
+            "rec": self._extract_component_providers(rec_engine),
+        }
+        active_providers = []
+        for providers in component_providers.values():
+            for provider in providers:
+                if provider not in active_providers:
+                    active_providers.append(provider)
+
+        gpu_detected = any(self._is_gpu_provider(p) for p in self.available_providers)
+        gpu_provider = next((p for p in active_providers if self._is_gpu_provider(p)), "")
+        gpu_enabled = bool(gpu_provider)
         return {
             "acceleration_mode": self.acceleration_mode,
             "providers": self.available_providers,
+            "available_providers": self.available_providers,
+            "use_gpu_requested": self.use_gpu_requested,
+            "component_providers": component_providers,
+            "active_providers": active_providers,
+            "gpu_detected": gpu_detected,
+            "gpu_enabled": gpu_enabled,
+            "gpu_provider": gpu_provider,
         }
 
     @staticmethod
@@ -219,15 +322,46 @@ class DesktopOCRTool:
         *,
         threshold: float,
     ) -> list[str]:
+        match_index = self.build_match_index(items, case_sensitive=False)
         missing: list[str] = []
         for target in targets:
             query = target.strip()
             if not query:
                 continue
-            matches = self.find_text(items, query, threshold=threshold, topk=1, case_sensitive=False)
+            matches = self.find_text(
+                None,
+                query,
+                threshold=threshold,
+                topk=1,
+                case_sensitive=False,
+                preindexed_items=match_index,
+            )
             if not matches:
                 missing.append(query)
         return missing
+
+    def build_match_index(
+        self,
+        items: Iterable[OCRItem],
+        *,
+        case_sensitive: bool = False,
+    ) -> list[dict[str, Any]]:
+        indexed: list[dict[str, Any]] = []
+        for item in items:
+            candidate = item.text if case_sensitive else item.text.lower()
+            candidate_norm = self._normalize_match_text(candidate)
+            candidate_cmp = candidate_norm or candidate
+            indexed.append(
+                {
+                    "item": item,
+                    "candidate": candidate,
+                    "candidate_norm": candidate_norm,
+                    "candidate_cmp": candidate_cmp,
+                    "candidate_len": len(candidate_cmp),
+                    "candidate_first": candidate_cmp[:1],
+                }
+            )
+        return indexed
 
     @staticmethod
     def _clip_roi(x: int, y: int, w: int, h: int, img_w: int, img_h: int) -> tuple[int, int, int, int]:
@@ -554,28 +688,44 @@ class DesktopOCRTool:
 
     def find_text(
         self,
-        items: Iterable[OCRItem],
+        items: Iterable[OCRItem] | None,
         target_text: str,
         *,
         threshold: float = 0.6,
         case_sensitive: bool = False,
         topk: int = 5,
+        preindexed_items: list[dict[str, Any]] | None = None,
     ) -> list[dict[str, Any]]:
         if not case_sensitive:
             target = target_text.lower()
         else:
             target = target_text
         target_norm = self._normalize_match_text(target)
+        target_cmp = target_norm or target
+        len_target = max(1, len(target_cmp))
+        target_first = target_cmp[:1]
         is_short_cjk_target = (
             bool(target_norm)
             and len(target_norm) <= 2
             and any("\u4e00" <= ch <= "\u9fff" for ch in target_norm)
         )
 
+        if preindexed_items is None:
+            if items is None:
+                return []
+            indexed_items = self.build_match_index(items, case_sensitive=case_sensitive)
+        else:
+            indexed_items = preindexed_items
+
         matches: list[dict[str, Any]] = []
-        for item in items:
-            candidate = item.text if case_sensitive else item.text.lower()
-            candidate_norm = self._normalize_match_text(candidate)
+        for entry in indexed_items:
+            item = entry["item"]
+            candidate = str(entry.get("candidate", ""))
+            candidate_norm = str(entry.get("candidate_norm", ""))
+            candidate_cmp = str(entry.get("candidate_cmp", candidate_norm or candidate))
+            candidate_len = int(entry.get("candidate_len", len(candidate_cmp)))
+            candidate_first = str(entry.get("candidate_first", ""))
+            contains_target = bool(target) and (target in candidate)
             contains_target_norm = bool(target_norm) and (target_norm in candidate_norm)
 
             # For short CJK targets (single/dual char), fuzzy similarity causes many false positives.
@@ -583,15 +733,21 @@ class DesktopOCRTool:
             if is_short_cjk_target and not contains_target_norm:
                 continue
 
+            # Cheap pre-filter: avoid costly fuzzy scoring for obviously unrelated strings.
+            if not is_short_cjk_target and not contains_target and not contains_target_norm:
+                len_gap = abs(len_target - max(1, candidate_len))
+                max_len_gap = max(4, int(len_target * 0.85))
+                if len_gap > max_len_gap:
+                    continue
+                if target_first and candidate_first and target_first != candidate_first:
+                    continue
+
             exact_bonus = 1.0 if candidate == target else 0.0
             exact_norm_bonus = 0.35 if target_norm and candidate_norm == target_norm else 0.0
-            contains_bonus = 0.22 if target in candidate else 0.0
+            contains_bonus = 0.22 if contains_target else 0.0
             contains_norm_bonus = 0.15 if contains_target_norm else 0.0
-            target_cmp = target_norm or target
-            candidate_cmp = candidate_norm or candidate
             similarity = SequenceMatcher(None, target_cmp, candidate_cmp).ratio()
-            len_target = max(1, len(target_cmp))
-            len_cand = max(1, len(candidate_cmp))
+            len_cand = max(1, candidate_len)
             if is_short_cjk_target:
                 length_penalty = 0.0
             else:

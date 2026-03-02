@@ -9,6 +9,8 @@ venv/
 # Runtime artifacts
 captures/
 configs/
+test/results/*
+!test/results/.gitkeep
 *.log
 
 # OS/editor noise

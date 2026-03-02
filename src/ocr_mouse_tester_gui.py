@@ -172,28 +172,37 @@ def locate_candidate_matches(
 ) -> list[dict[str, Any]]:
     threshold_levels = [threshold, max(0.45, threshold - 0.1), 0.36]
     all_candidates: list[dict[str, Any]] = []
+    match_index = tool.build_match_index(items, case_sensitive=False)
     for th in threshold_levels:
-        all_candidates.extend(tool.find_text(items, target, threshold=th, topk=max(topk * 2, 8), case_sensitive=False))
+        all_candidates.extend(
+            tool.find_text(
+                None,
+                target,
+                threshold=th,
+                topk=max(topk * 2, 8),
+                case_sensitive=False,
+                preindexed_items=match_index,
+            )
+        )
     if not all_candidates:
         return []
     all_candidates.sort(key=lambda x: (x["match_score"], x["ocr_score"]), reverse=True)
     return _dedup_by_center(all_candidates, max_keep=topk, min_dist=16)
 
 
-def locate_matches_strict(
+def verify_candidate_matches(
     tool: DesktopOCRTool,
     image_bgr: Any,
-    items: Iterable[OCRItem],
     target: str,
-    threshold: float,
-    topk: int,
+    candidates: list[dict[str, Any]],
     *,
     screen_left: int,
     screen_top: int,
     min_score: float,
+    threshold: float,
+    topk: int,
     verify_topk: int = 4,
 ) -> list[dict[str, Any]]:
-    candidates = locate_candidate_matches(tool, items, target, threshold, max(topk, verify_topk))
     if not candidates:
         return []
 
@@ -222,22 +231,85 @@ def locate_matches_strict(
     return _dedup_by_center(verified_list, max_keep=topk, min_dist=14)
 
 
+def locate_matches_strict(
+    tool: DesktopOCRTool,
+    image_bgr: Any,
+    items: Iterable[OCRItem],
+    target: str,
+    threshold: float,
+    topk: int,
+    *,
+    screen_left: int,
+    screen_top: int,
+    min_score: float,
+    verify_topk: int = 4,
+) -> list[dict[str, Any]]:
+    candidates = locate_candidate_matches(tool, items, target, threshold, max(topk, verify_topk))
+    return verify_candidate_matches(
+        tool=tool,
+        image_bgr=image_bgr,
+        target=target,
+        candidates=candidates,
+        screen_left=screen_left,
+        screen_top=screen_top,
+        min_score=min_score,
+        threshold=threshold,
+        topk=topk,
+        verify_topk=verify_topk,
+    )
+
+
+def should_use_strict_verification(
+    candidates: list[dict[str, Any]],
+    *,
+    threshold: float,
+    attempt: int,
+) -> tuple[bool, str]:
+    if not candidates:
+        return False, "no_candidates"
+
+    top = candidates[0]
+    top_match = float(top.get("match_score", 0.0))
+    top_ocr = float(top.get("ocr_score", 0.0))
+    second_match = float(candidates[1].get("match_score", 0.0)) if len(candidates) > 1 else 0.0
+    margin = top_match - second_match
+
+    if attempt > 1:
+        return True, "retry_attempt"
+    if top_match >= max(0.86, threshold + 0.18) and top_ocr >= 0.72 and margin >= 0.08:
+        return False, "high_confidence_top1"
+    if margin < 0.06:
+        return True, "small_margin"
+    if top_match < max(0.70, threshold + 0.05):
+        return True, "low_match_score"
+    if top_ocr < 0.58:
+        return True, "low_ocr_score"
+    return False, "stable_top1"
+
+
 class OCRMouseTesterGUI:
     def __init__(self, root: tk.Tk) -> None:
         self.root = root
         self.root.title("OCR Mouse Tester")
-        self.root.geometry("1100x760")
-        self.root.minsize(980, 680)
+        self.root.geometry("1240x920")
+        self.root.minsize(1040, 760)
 
         self.event_queue: queue.Queue[tuple[str, Any]] = queue.Queue()
         self.worker_thread: threading.Thread | None = None
         self.stop_event = threading.Event()
         self.running = False
-        self.ocr_tool = DesktopOCRTool()
+        self.use_gpu_var = tk.BooleanVar(value=True)
+        self.ocr_tool = DesktopOCRTool(use_gpu=bool(self.use_gpu_var.get()))
         self.ocr_cache: dict[tuple[Any, ...], list[OCRItem]] = {}
         self.ocr_cache_lock = threading.Lock()
+        self.runtime_gpu_detected_label: tk.Label | None = None
+        self.runtime_gpu_enabled_label: tk.Label | None = None
 
         self.status_var = tk.StringVar(value="Idle")
+        self.runtime_gpu_detected_var = tk.StringVar(value="-")
+        self.runtime_gpu_enabled_var = tk.StringVar(value="-")
+        self.runtime_mode_var = tk.StringVar(value="-")
+        self.runtime_active_provider_var = tk.StringVar(value="-")
         self.image_var = tk.StringVar(value="")
         self.screen_left_var = tk.StringVar(value="0")
         self.screen_top_var = tk.StringVar(value="0")
@@ -251,8 +323,11 @@ class OCRMouseTesterGUI:
         self.max_retries_var = tk.StringVar(value="1")
         self.dry_run_var = tk.BooleanVar(value=False)
         self.strict_mode_var = tk.BooleanVar(value=True)
+        self.perf_table: ttk.Treeview | None = None
 
         self._build_ui()
+        self._reset_performance_panel()
+        self._refresh_runtime_status(log_event=False, reinit_if_needed=False)
         self.root.after(120, self._drain_events)
 
     def _build_ui(self) -> None:
@@ -298,6 +373,12 @@ class OCRMouseTesterGUI:
         ttk.Checkbutton(config_frame, text="Strict Mode", variable=self.strict_mode_var).grid(
             row=4, column=1, sticky="w", padx=6, pady=6
         )
+        ttk.Checkbutton(
+            config_frame,
+            text="Use GPU (if available)",
+            variable=self.use_gpu_var,
+            command=self._on_use_gpu_toggled,
+        ).grid(row=4, column=2, columnspan=2, sticky="w", padx=6, pady=6)
 
         target_frame = ttk.LabelFrame(root_frame, text="Targets")
         target_frame.pack(fill=tk.X, padx=2, pady=8)
@@ -316,7 +397,63 @@ class OCRMouseTesterGUI:
         self.stop_btn.pack(side=tk.LEFT, padx=4)
         ttk.Button(control_frame, text="Save Config", command=self._save_config).pack(side=tk.LEFT, padx=4)
         ttk.Button(control_frame, text="Load Config", command=self._load_config).pack(side=tk.LEFT, padx=4)
+        ttk.Button(control_frame, text="Refresh Runtime", command=self._refresh_runtime_status).pack(side=tk.LEFT, padx=4)
         ttk.Label(control_frame, textvariable=self.status_var).pack(side=tk.LEFT, padx=14)
+
+        runtime_frame = ttk.LabelFrame(root_frame, text="Runtime")
+        runtime_frame.pack(fill=tk.X, padx=2, pady=4)
+
+        summary_frame = ttk.Frame(runtime_frame)
+        summary_frame.pack(fill=tk.X, padx=6, pady=(6, 4))
+        summary_fields = [
+            ("GPU Detected", self.runtime_gpu_detected_var, "gpu_detected", 12),
+            ("GPU Enabled", self.runtime_gpu_enabled_var, "gpu_enabled", 12),
+            ("Mode", self.runtime_mode_var, "mode", 14),
+            ("Active Provider", self.runtime_active_provider_var, "active_provider", 32),
+        ]
+        for idx, (label, var, key, width) in enumerate(summary_fields):
+            col = idx * 2
+            ttk.Label(summary_frame, text=label).grid(row=0, column=col, sticky="w", padx=(0, 6), pady=2)
+            value_label = tk.Label(
+                summary_frame,
+                textvariable=var,
+                width=width,
+                anchor="center",
+                relief=tk.GROOVE,
+                borderwidth=1,
+                padx=5,
+                pady=2,
+            )
+            value_label.grid(row=0, column=col + 1, sticky="w", padx=(0, 14), pady=2)
+            if key == "gpu_detected":
+                self.runtime_gpu_detected_label = value_label
+            elif key == "gpu_enabled":
+                self.runtime_gpu_enabled_label = value_label
+
+        for col_idx in range(len(summary_fields) * 2):
+            summary_frame.grid_columnconfigure(col_idx, weight=1 if col_idx % 2 == 1 else 0)
+
+        detail_frame = ttk.Frame(runtime_frame)
+        detail_frame.pack(fill=tk.X, padx=6, pady=(0, 6))
+        self.runtime_table = ttk.Treeview(detail_frame, columns=("field", "value"), show="headings", height=4)
+        self.runtime_table.heading("field", text="Field")
+        self.runtime_table.heading("value", text="Value")
+        self.runtime_table.column("field", width=160, minwidth=120, anchor="w", stretch=False)
+        self.runtime_table.column("value", width=880, minwidth=400, anchor="w", stretch=True)
+        runtime_xscroll = ttk.Scrollbar(detail_frame, orient=tk.HORIZONTAL, command=self.runtime_table.xview)
+        self.runtime_table.configure(xscrollcommand=runtime_xscroll.set)
+        self.runtime_table.grid(row=0, column=0, sticky="nsew")
+        runtime_xscroll.grid(row=1, column=0, sticky="ew")
+        detail_frame.grid_columnconfigure(0, weight=1)
+
+        perf_frame = ttk.LabelFrame(root_frame, text="Performance")
+        perf_frame.pack(fill=tk.X, padx=2, pady=4)
+        self.perf_table = ttk.Treeview(perf_frame, columns=("stage", "value"), show="headings", height=8)
+        self.perf_table.heading("stage", text="Stage")
+        self.perf_table.heading("value", text="Duration / Info")
+        self.perf_table.column("stage", width=220, minwidth=180, anchor="w", stretch=False)
+        self.perf_table.column("value", width=860, minwidth=420, anchor="w", stretch=True)
+        self.perf_table.pack(fill=tk.X, expand=True, padx=6, pady=6)
 
         result_frame = ttk.LabelFrame(root_frame, text="Result")
         result_frame.pack(fill=tk.BOTH, expand=True, padx=2, pady=4)
@@ -373,8 +510,7 @@ class OCRMouseTesterGUI:
     def _capture_screen(self) -> None:
         output = Path("captures") / f"gui_capture_{int(time.time() * 1000)}.png"
         try:
-            tool = DesktopOCRTool()
-            capture = tool.capture_fullscreen(output)
+            capture = self.ocr_tool.capture_fullscreen(output)
         except Exception as exc:
             messagebox.showerror("Capture failed", str(exc))
             return
@@ -416,6 +552,7 @@ class OCRMouseTesterGUI:
             "max_retries": int(self.max_retries_var.get().strip()),
             "dry_run": bool(self.dry_run_var.get()),
             "strict_mode": bool(self.strict_mode_var.get()),
+            "use_gpu": bool(self.use_gpu_var.get()),
         }
         if cfg["circle_min"] < 1 or cfg["circle_max"] < cfg["circle_min"]:
             raise ValueError("Circle range invalid. Require: 1 <= min <= max.")
@@ -504,7 +641,167 @@ class OCRMouseTesterGUI:
         if target_text:
             self.targets_text.insert(tk.END, target_text + "\n")
 
+        self.use_gpu_var.set(bool(params.get("use_gpu", self.use_gpu_var.get())))
+        self._ensure_runtime_preference(log_event=False)
+        self._refresh_runtime_status(log_event=False, reinit_if_needed=False)
         self._log("CONFIG", f"Loaded config: {Path(in_path).resolve()}")
+
+    def _clear_ocr_cache(self) -> None:
+        with self.ocr_cache_lock:
+            self.ocr_cache.clear()
+
+    def _ensure_runtime_preference(self, *, log_event: bool = True) -> bool:
+        desired_use_gpu = bool(self.use_gpu_var.get())
+        current_use_gpu = bool(getattr(self.ocr_tool, "use_gpu_requested", True))
+        if desired_use_gpu == current_use_gpu:
+            return False
+        if self.running:
+            if log_event:
+                self._log("RUNTIME", "Use GPU changed while running; new setting will apply on next run.")
+            return False
+
+        self.ocr_tool = DesktopOCRTool(use_gpu=desired_use_gpu)
+        self._clear_ocr_cache()
+        if log_event:
+            self._log("RUNTIME", f"OCR engine reloaded with use_gpu={'YES' if desired_use_gpu else 'NO'}.")
+        return True
+
+    def _on_use_gpu_toggled(self) -> None:
+        self._refresh_runtime_status(log_event=True, reinit_if_needed=True)
+
+    @staticmethod
+    def _format_timing_cell(seconds: float, total: float) -> str:
+        if seconds < 0:
+            return "-"
+        if total > 1e-9:
+            return f"{seconds:.3f}s ({seconds / total * 100:.1f}%)"
+        return f"{seconds:.3f}s"
+
+    def _reset_performance_panel(self) -> None:
+        if self.perf_table is None:
+            return
+        for row_id in self.perf_table.get_children():
+            self.perf_table.delete(row_id)
+        for stage, value in [
+            ("Total", "-"),
+            ("OCR", "-"),
+            ("Image Load", "-"),
+            ("Search / Match", "-"),
+            ("Mouse Actions", "-"),
+            ("Other", "-"),
+            ("Runtime Mode", "-"),
+            ("Use GPU Requested", "-"),
+            ("GPU Enabled", "-"),
+            ("OCR Cache Hit", "-"),
+        ]:
+            self.perf_table.insert("", tk.END, values=(stage, value))
+
+    def _render_performance_panel(self, timings: dict[str, Any]) -> None:
+        if self.perf_table is None:
+            return
+        total = float(timings.get("total_sec", 0.0))
+        ocr_sec = float(timings.get("ocr_sec", 0.0))
+        image_sec = float(timings.get("image_load_sec", 0.0))
+        search_sec = float(timings.get("search_sec", 0.0))
+        mouse_sec = float(timings.get("mouse_action_sec", 0.0))
+        other_sec = float(timings.get("other_sec", max(0.0, total - (ocr_sec + image_sec + search_sec + mouse_sec))))
+        runtime_mode = str(timings.get("runtime_mode", "-"))
+        use_gpu_requested = "YES" if bool(timings.get("use_gpu_requested", False)) else "NO"
+        gpu_enabled = "YES" if bool(timings.get("gpu_enabled", False)) else "NO"
+        cache_hit = "YES" if bool(timings.get("ocr_cache_hit", False)) else "NO"
+
+        rows = [
+            ("Total", f"{total:.3f}s"),
+            ("OCR", self._format_timing_cell(ocr_sec, total)),
+            ("Image Load", self._format_timing_cell(image_sec, total)),
+            ("Search / Match", self._format_timing_cell(search_sec, total)),
+            ("Mouse Actions", self._format_timing_cell(mouse_sec, total)),
+            ("Other", self._format_timing_cell(other_sec, total)),
+            ("Runtime Mode", runtime_mode),
+            ("Use GPU Requested", use_gpu_requested),
+            ("GPU Enabled", gpu_enabled),
+            ("OCR Cache Hit", cache_hit),
+        ]
+
+        for row_id in self.perf_table.get_children():
+            self.perf_table.delete(row_id)
+        for stage, value in rows:
+            self.perf_table.insert("", tk.END, values=(stage, value))
+
+    def _extract_runtime_view(self, runtime: dict[str, Any]) -> dict[str, str]:
+        gpu_detected = "YES" if runtime.get("gpu_detected") else "NO"
+        gpu_enabled = "YES" if runtime.get("gpu_enabled") else "NO"
+        gpu_provider = runtime.get("gpu_provider") or "CPUExecutionProvider"
+        mode = runtime.get("acceleration_mode", "cpu")
+        use_gpu_requested = "YES" if runtime.get("use_gpu_requested", False) else "NO"
+
+        available = ", ".join(runtime.get("available_providers", [])) or "-"
+        component = runtime.get("component_providers", {})
+        det = ", ".join(component.get("det", [])) or "-"
+        cls = ", ".join(component.get("cls", [])) or "-"
+        rec = ", ".join(component.get("rec", [])) or "-"
+        return {
+            "gpu_detected": gpu_detected,
+            "gpu_enabled": gpu_enabled,
+            "mode": mode,
+            "active_provider": gpu_provider,
+            "use_gpu_requested": use_gpu_requested,
+            "available": available,
+            "det": det,
+            "cls": cls,
+            "rec": rec,
+        }
+
+    @staticmethod
+    def _format_runtime_summary(view: dict[str, str]) -> str:
+        return (
+            f"use_gpu_requested={view['use_gpu_requested']}, "
+            f"GPU detected={view['gpu_detected']}, GPU enabled={view['gpu_enabled']}, "
+            f"mode={view['mode']}, active_provider={view['active_provider']}"
+        )
+
+    @staticmethod
+    def _status_color(value: str) -> str:
+        upper = value.strip().upper()
+        if upper == "YES":
+            return "#1f7a1f"
+        if upper == "NO":
+            return "#c62828"
+        return "#424242"
+
+    def _update_runtime_status_colors(self) -> None:
+        if self.runtime_gpu_detected_label is not None:
+            value = self.runtime_gpu_detected_var.get()
+            self.runtime_gpu_detected_label.config(fg=self._status_color(value))
+        if self.runtime_gpu_enabled_label is not None:
+            value = self.runtime_gpu_enabled_var.get()
+            self.runtime_gpu_enabled_label.config(fg=self._status_color(value))
+
+    def _refresh_runtime_status(self, log_event: bool = True, reinit_if_needed: bool = True) -> None:
+        if reinit_if_needed:
+            self._ensure_runtime_preference(log_event=log_event)
+        runtime = self.ocr_tool.get_runtime_info()
+        view = self._extract_runtime_view(runtime)
+        self.runtime_gpu_detected_var.set(view["gpu_detected"])
+        self.runtime_gpu_enabled_var.set(view["gpu_enabled"])
+        self.runtime_mode_var.set(view["mode"])
+        self.runtime_active_provider_var.set(view["active_provider"])
+        self._update_runtime_status_colors()
+
+        for row_id in self.runtime_table.get_children():
+            self.runtime_table.delete(row_id)
+        for field, value in [
+            ("Use GPU Requested", view["use_gpu_requested"]),
+            ("Available Providers", view["available"]),
+            ("DET Providers", view["det"]),
+            ("CLS Providers", view["cls"]),
+            ("REC Providers", view["rec"]),
+        ]:
+            self.runtime_table.insert("", tk.END, values=(field, value))
+
+        summary = self._format_runtime_summary(view)
+        if log_event:
+            self._log("RUNTIME", summary)
 
     def _start(self) -> None:
         if self.running:
@@ -536,6 +833,9 @@ class OCRMouseTesterGUI:
         for row_id in self.result_table.get_children():
             self.result_table.delete(row_id)
         self._clear_log()
+        self._reset_performance_panel()
+        self._ensure_runtime_preference(log_event=True)
+        self._refresh_runtime_status(log_event=False, reinit_if_needed=False)
 
         self.running = True
         self.stop_event.clear()
@@ -546,12 +846,14 @@ class OCRMouseTesterGUI:
         self.worker_thread = threading.Thread(target=self._run_worker, args=(config,), daemon=True)
         self.worker_thread.start()
         runtime = self.ocr_tool.get_runtime_info()
+        self._refresh_runtime_status(log_event=False, reinit_if_needed=False)
+        runtime_summary = self._format_runtime_summary(self._extract_runtime_view(runtime))
         self._log(
             "INIT",
             (
                 f"Started with {len(targets)} targets, rounds={config['rounds']}, "
                 f"max_retries={config['max_retries']}. "
-                f"runtime={runtime['acceleration_mode']}, strict_mode={config['strict_mode']}"
+                f"{runtime_summary}, strict_mode={config['strict_mode']}"
             ),
         )
 
@@ -563,26 +865,74 @@ class OCRMouseTesterGUI:
 
     def _run_worker(self, config: dict[str, Any]) -> None:
         results: list[TargetResult] = []
+        total_expected = int(config.get("rounds", 1)) * len(config.get("targets", []))
+        run_started = time.perf_counter()
+        timings: dict[str, Any] = {
+            "ocr_sec": 0.0,
+            "image_load_sec": 0.0,
+            "search_sec": 0.0,
+            "mouse_action_sec": 0.0,
+            "other_sec": 0.0,
+            "total_sec": 0.0,
+            "ocr_cache_hit": False,
+            "runtime_mode": "cpu",
+            "use_gpu_requested": bool(config.get("use_gpu", True)),
+            "gpu_enabled": False,
+        }
+
+        def _emit_done(state: str) -> None:
+            total_sec = max(0.0, time.perf_counter() - run_started)
+            timings["total_sec"] = total_sec
+            known_sec = (
+                float(timings.get("ocr_sec", 0.0))
+                + float(timings.get("image_load_sec", 0.0))
+                + float(timings.get("search_sec", 0.0))
+                + float(timings.get("mouse_action_sec", 0.0))
+            )
+            timings["other_sec"] = max(0.0, total_sec - known_sec)
+            self.event_queue.put(
+                (
+                    "done",
+                    {
+                        "state": state,
+                        "results": results,
+                        "total_expected": total_expected,
+                        "timings": dict(timings),
+                    },
+                )
+            )
+
         try:
             tool = self.ocr_tool
             runtime = tool.get_runtime_info()
+            runtime_view = self._extract_runtime_view(runtime)
+            runtime_summary = self._format_runtime_summary(runtime_view)
+            runtime_detail = (
+                f"available={runtime_view['available']} | det={runtime_view['det']} | "
+                f"cls={runtime_view['cls']} | rec={runtime_view['rec']}"
+            )
             self.event_queue.put(
                 (
                     "log",
                     (
                         "OCR",
-                        (
-                            f"Runtime mode={runtime['acceleration_mode']}, "
-                            f"providers={runtime['providers']}"
-                        ),
+                        runtime_summary,
                     ),
                 )
             )
+            self.event_queue.put(("log", ("OCR", runtime_detail)))
+            timings["runtime_mode"] = str(runtime.get("acceleration_mode", "cpu"))
+            timings["use_gpu_requested"] = bool(runtime.get("use_gpu_requested", config.get("use_gpu", True)))
+            timings["gpu_enabled"] = bool(runtime.get("gpu_enabled", False))
 
             targets: list[str] = config["targets"]
             cache_key = self._build_ocr_cache_key(config)
+            total_expected = config["rounds"] * len(targets)
+
+            ocr_stage_started = time.perf_counter()
             items = self._get_cached_ocr(cache_key)
             if items is not None:
+                timings["ocr_cache_hit"] = True
                 self.event_queue.put(("log", ("OCR", f"Cache hit: reuse {len(items)} OCR items.")))
             else:
                 self.event_queue.put(("log", ("OCR", "Running OCR (target-driven)...")))
@@ -597,15 +947,17 @@ class OCRMouseTesterGUI:
                 )
                 self._put_cached_ocr(cache_key, items)
                 self.event_queue.put(("log", ("OCR", f"OCR completed: {len(items)} text items.")))
+            timings["ocr_sec"] += max(0.0, time.perf_counter() - ocr_stage_started)
 
+            image_load_started = time.perf_counter()
             image_bgr = cv2.imread(str(config["image_path"]))
+            timings["image_load_sec"] += max(0.0, time.perf_counter() - image_load_started)
             if image_bgr is None:
                 raise FileNotFoundError(f"Cannot read screenshot: {config['image_path']}")
 
             mouse = HumanMouse(speed=config["speed"], stop_event=self.stop_event)
             rounds = config["rounds"]
             max_retries = config["max_retries"]
-            total_expected = rounds * len(targets)
 
             for round_index in range(1, rounds + 1):
                 if self.stop_event.is_set():
@@ -628,6 +980,7 @@ class OCRMouseTesterGUI:
                     for attempt in range(1, max_attempts + 1):
                         if self.stop_event.is_set():
                             raise StoppedError("Stopped during target retry loop.")
+                        search_started = time.perf_counter()
                         effective_threshold = max(0.30, config["threshold"] - 0.05 * (attempt - 1))
                         self.event_queue.put(
                             (
@@ -644,34 +997,82 @@ class OCRMouseTesterGUI:
                             )
                         )
                         if config["strict_mode"]:
-                            strict_matches = locate_matches_strict(
+                            plain_matches = locate_candidate_matches(
                                 tool=tool,
-                                image_bgr=image_bgr,
                                 items=items,
                                 target=target,
                                 threshold=effective_threshold,
                                 topk=config["topk"],
-                                screen_left=config["screen_left"],
-                                screen_top=config["screen_top"],
-                                min_score=config["min_score"],
-                                verify_topk=max(2, min(4, int(config["topk"]))),
                             )
-                            if strict_matches:
-                                best_matches = strict_matches
-                                attempt_used = attempt
-                                self.event_queue.put(
-                                    (
-                                        "log",
-                                        (
-                                            "VERIFY",
-                                            (
-                                                f"precheck passed: kept {len(best_matches)} candidates"
-                                            ),
-                                        ),
-                                    )
+                            if plain_matches:
+                                need_strict, strict_reason = should_use_strict_verification(
+                                    plain_matches,
+                                    threshold=effective_threshold,
+                                    attempt=attempt,
                                 )
-                                break
-                            self.event_queue.put(("log", ("VERIFY", "precheck failed, trying fallback/retry...")))
+                                if need_strict:
+                                    strict_matches = verify_candidate_matches(
+                                        tool=tool,
+                                        image_bgr=image_bgr,
+                                        target=target,
+                                        candidates=plain_matches,
+                                        screen_left=config["screen_left"],
+                                        screen_top=config["screen_top"],
+                                        min_score=config["min_score"],
+                                        threshold=effective_threshold,
+                                        topk=config["topk"],
+                                        verify_topk=max(2, min(4, int(config["topk"]))),
+                                    )
+                                    if strict_matches:
+                                        best_matches = strict_matches
+                                        attempt_used = attempt
+                                        self.event_queue.put(
+                                            (
+                                                "log",
+                                                (
+                                                    "VERIFY",
+                                                    (
+                                                        f"strict applied ({strict_reason}), "
+                                                        f"kept {len(best_matches)} candidates"
+                                                    ),
+                                                ),
+                                            )
+                                        )
+                                        timings["search_sec"] += max(0.0, time.perf_counter() - search_started)
+                                        break
+                                    self.event_queue.put(
+                                        (
+                                            "log",
+                                            (
+                                                "VERIFY",
+                                                f"strict applied ({strict_reason}) but failed, retry...",
+                                            ),
+                                        )
+                                    )
+                                else:
+                                    best_matches = []
+                                    for m in plain_matches:
+                                        payload = dict(m)
+                                        payload["source"] = "ocr-fast"
+                                        payload["strict_reason"] = strict_reason
+                                        best_matches.append(payload)
+                                    attempt_used = attempt
+                                    self.event_queue.put(
+                                        (
+                                            "log",
+                                            (
+                                                "VERIFY",
+                                                (
+                                                    f"strict skipped ({strict_reason}), "
+                                                    f"use fast candidates={len(best_matches)}"
+                                                ),
+                                            ),
+                                        )
+                                    )
+                                    timings["search_sec"] += max(0.0, time.perf_counter() - search_started)
+                                    break
+                            else:
+                                self.event_queue.put(("log", ("VERIFY", "no candidate from fast match, retry...")))
                         else:
                             plain_matches = locate_candidate_matches(
                                 tool=tool,
@@ -687,11 +1088,13 @@ class OCRMouseTesterGUI:
                                     payload["source"] = "ocr"
                                     best_matches.append(payload)
                                 attempt_used = attempt
+                                timings["search_sec"] += max(0.0, time.perf_counter() - search_started)
                                 break
                         if attempt < max_attempts:
                             self.event_queue.put(
                                 ("log", ("RETRY", f"Target not found yet, retrying: '{target}'"))
                             )
+                        timings["search_sec"] += max(0.0, time.perf_counter() - search_started)
 
                     if not best_matches:
                         result = TargetResult(
@@ -748,12 +1151,14 @@ class OCRMouseTesterGUI:
 
                         status = "located_only"
                         if not config["dry_run"]:
+                            mouse_started = time.perf_counter()
                             self.event_queue.put(("log", ("MOVE", f"Moving to ({x},{y}) in human-like path...")))
                             mouse.move_to(x, y)
                             self.event_queue.put(("log", ("SPIN", f"Spinning at target: {circles} circles.")))
                             mouse.spin_at(x, y, circles=circles)
                             self.event_queue.put(("log", ("CLICK", f"Clicking at ({x},{y})")))
                             mouse.click_at(x, y)
+                            timings["mouse_action_sec"] += max(0.0, time.perf_counter() - mouse_started)
                             status = "completed"
                             self.event_queue.put(("log", ("DONE", f"Completed target: {target} ({hit_idx}/{total_hits})")))
                         else:
@@ -777,52 +1182,16 @@ class OCRMouseTesterGUI:
                         results.append(result)
                         self.event_queue.put(("result", result))
 
-            self.event_queue.put(
-                (
-                    "done",
-                    {
-                        "state": "completed",
-                        "results": results,
-                        "total_expected": total_expected,
-                    },
-                )
-            )
+            _emit_done("completed")
         except StoppedError as exc:
             self.event_queue.put(("log", ("STOP", str(exc))))
-            self.event_queue.put(
-                (
-                    "done",
-                    {
-                        "state": "stopped",
-                        "results": results,
-                        "total_expected": config["rounds"] * len(config["targets"]),
-                    },
-                )
-            )
+            _emit_done("stopped")
         except pyautogui.FailSafeException:
             self.event_queue.put(("log", ("FAILSAFE", "PyAutoGUI failsafe triggered at top-left corner.")))
-            self.event_queue.put(
-                (
-                    "done",
-                    {
-                        "state": "stopped",
-                        "results": results,
-                        "total_expected": config["rounds"] * len(config["targets"]),
-                    },
-                )
-            )
+            _emit_done("stopped")
         except Exception as exc:
             self.event_queue.put(("log", ("ERROR", str(exc))))
-            self.event_queue.put(
-                (
-                    "done",
-                    {
-                        "state": "error",
-                        "results": results,
-                        "total_expected": config["rounds"] * len(config["targets"]),
-                    },
-                )
-            )
+            _emit_done("error")
 
     def _drain_events(self) -> None:
         while True:
@@ -856,16 +1225,23 @@ class OCRMouseTesterGUI:
                 done_state = payload["state"]
                 results = payload["results"]
                 total_expected = int(payload["total_expected"])
+                timings = payload.get("timings", {})
                 total = len(results)
                 hit_records = sum(1 for r in results if r.status in {"completed", "located_only"})
                 hit_targets = len(
                     {(r.round_index, r.target) for r in results if r.status in {"completed", "located_only"}}
                 )
+                self._render_performance_panel(timings)
+                total_sec = float(timings.get("total_sec", 0.0))
+                ocr_sec = float(timings.get("ocr_sec", 0.0))
+                search_sec = float(timings.get("search_sec", 0.0))
+                mouse_sec = float(timings.get("mouse_action_sec", 0.0))
                 self._log(
                     "SUMMARY",
                     (
                         f"Run finished: state={done_state}, "
-                        f"matched_targets={hit_targets}/{total_expected}, matched_points={hit_records}, records={total}"
+                        f"matched_targets={hit_targets}/{total_expected}, matched_points={hit_records}, records={total}, "
+                        f"total={total_sec:.3f}s, ocr={ocr_sec:.3f}s, search={search_sec:.3f}s, mouse={mouse_sec:.3f}s"
                     ),
                 )
                 self.running = False
@@ -894,6 +1270,7 @@ class OCRMouseTesterGUI:
             int(config["screen_top"]),
             round(float(config["min_score"]), 3),
             round(float(config["threshold"]), 3),
+            int(bool(config.get("use_gpu", True))),
             normalized_targets,
         )
 

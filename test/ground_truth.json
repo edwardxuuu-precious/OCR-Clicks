@@ -1,0 +1,41 @@
+﻿{
+  "image_path": "test/test_capture.png",
+  "cases": [
+    {
+      "target": "OCR Mouse Tester",
+      "expected_text": "OCR Mouse Tester",
+      "expected_center": [70, 16],
+      "tolerance_px": 35
+    },
+    {
+      "target": "Screenshot",
+      "expected_text": "Screenshot",
+      "expected_center": [59, 86],
+      "tolerance_px": 35
+    },
+    {
+      "target": "Browse",
+      "expected_text": "Browse",
+      "expected_center": [1542, 84],
+      "tolerance_px": 35
+    },
+    {
+      "target": "Capture Screen",
+      "expected_text": "Capture Screen",
+      "expected_center": [1649, 85],
+      "tolerance_px": 35
+    },
+    {
+      "target": "min_score",
+      "expected_text": "min_score",
+      "expected_center": [1295, 120],
+      "tolerance_px": 35
+    },
+    {
+      "target": "threshold",
+      "expected_text": "threshold",
+      "expected_center": [1455, 119],
+      "tolerance_px": 35
+    }
+  ]
+}
