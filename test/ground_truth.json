@@ -2,40 +2,144 @@
   "image_path": "test/test_capture.png",
   "cases": [
     {
+      "id": "title_en",
+      "lang": "en",
       "target": "OCR Mouse Tester",
+      "query_texts": ["OCR Mouse Tester", "Mouse Tester"],
       "expected_text": "OCR Mouse Tester",
+      "expected_texts": ["OCR Mouse Tester"],
       "expected_center": [70, 16],
       "tolerance_px": 35
     },
     {
+      "id": "screenshot_en",
+      "lang": "en",
       "target": "Screenshot",
+      "query_texts": ["Screenshot"],
       "expected_text": "Screenshot",
+      "expected_texts": ["Screenshot"],
       "expected_center": [59, 86],
       "tolerance_px": 35
     },
     {
+      "id": "browse_en",
+      "lang": "en",
       "target": "Browse",
+      "query_texts": ["Browse"],
       "expected_text": "Browse",
+      "expected_texts": ["Browse"],
       "expected_center": [1542, 84],
       "tolerance_px": 35
     },
     {
+      "id": "capture_screen_en",
+      "lang": "en",
       "target": "Capture Screen",
+      "query_texts": ["Capture Screen", "Capture"],
       "expected_text": "Capture Screen",
+      "expected_texts": ["Capture Screen"],
       "expected_center": [1649, 85],
       "tolerance_px": 35
     },
     {
+      "id": "min_score_en",
+      "lang": "en",
       "target": "min_score",
+      "query_texts": ["min_score", "min score"],
       "expected_text": "min_score",
+      "expected_texts": ["min_score"],
       "expected_center": [1295, 120],
       "tolerance_px": 35
     },
     {
+      "id": "threshold_en",
+      "lang": "en",
       "target": "threshold",
+      "query_texts": ["threshold"],
       "expected_text": "threshold",
+      "expected_texts": ["threshold"],
       "expected_center": [1455, 119],
       "tolerance_px": 35
+    },
+    {
+      "id": "wechat_official_zh",
+      "lang": "zh",
+      "target": "公众号",
+      "query_texts": ["公众号"],
+      "expected_text": "公众号",
+      "expected_texts": ["公众号"],
+      "expected_center": [2064, 41],
+      "tolerance_px": 40
+    },
+    {
+      "id": "file_transfer_zh",
+      "lang": "zh",
+      "target": "文件传输助手",
+      "query_texts": ["文件传输助手", "传输助手"],
+      "expected_text": "文件传输助手",
+      "expected_texts": ["文件传输助手", "传输助手"],
+      "expected_center": [1882, 95],
+      "tolerance_px": 40
+    },
+    {
+      "id": "regular_channels_zh",
+      "lang": "zh",
+      "target": "常看的号",
+      "query_texts": ["常看的号", "常看的"],
+      "expected_text": "常看的号",
+      "expected_texts": ["常看的号", "常看的"],
+      "expected_center": [2447, 96],
+      "tolerance_px": 45
+    },
+    {
+      "id": "contact_name_zh",
+      "lang": "zh",
+      "target": "笛笛宝宝",
+      "query_texts": ["笛笛宝宝"],
+      "expected_text": "笛笛宝宝",
+      "expected_texts": ["笛笛宝宝"],
+      "expected_center": [1870, 163],
+      "tolerance_px": 45
+    },
+    {
+      "id": "chat_preview_zh",
+      "lang": "zh",
+      "target": "你们出发了吗",
+      "query_texts": ["你们出发了吗", "出发了吗"],
+      "expected_text": "你们出发了吗",
+      "expected_texts": ["你们出发了吗", "出发了吗"],
+      "expected_center": [1878, 185],
+      "tolerance_px": 50
+    },
+    {
+      "id": "group_name_zh",
+      "lang": "zh",
+      "target": "三人秘密小组",
+      "query_texts": ["三人秘密小组", "秘密小组"],
+      "expected_text": "三人秘密小组",
+      "expected_texts": ["三人秘密小组", "秘密小组"],
+      "expected_center": [1883, 364],
+      "tolerance_px": 50
+    },
+    {
+      "id": "channel_name_zh",
+      "lang": "zh",
+      "target": "生财有术",
+      "query_texts": ["生财有术"],
+      "expected_text": "生财有术",
+      "expected_texts": ["生财有术"],
+      "expected_center": [2493, 679],
+      "tolerance_px": 50
+    },
+    {
+      "id": "headline_tag_zh",
+      "lang": "zh",
+      "target": "快讯",
+      "query_texts": ["快讯"],
+      "expected_text": "快讯",
+      "expected_texts": ["快讯"],
+      "expected_center": [2480, 1100],
+      "tolerance_px": 50
     }
   ]
 }

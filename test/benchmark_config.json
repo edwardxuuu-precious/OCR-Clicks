@@ -1,4 +1,4 @@
-﻿{
+{
   "image_path": "test/test_capture.png",
   "screen_left": 0,
   "screen_top": 0,
@@ -9,6 +9,7 @@
   "position_tolerance_px": 35,
   "warmup_runs": 1,
   "measure_runs": 5,
-  "modes": ["gpu", "cpu"],
+  "runtime_mode": "auto",
+  "compare_with_previous": true,
   "ground_truth_path": "test/ground_truth.json"
 }

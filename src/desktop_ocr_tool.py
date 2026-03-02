@@ -546,10 +546,7 @@ class DesktopOCRTool:
         else:
             scan_img = bgr
 
-        enhanced_scan = self._enhance_for_dark_ui(scan_img)
-        enhanced_full = self._enhance_for_dark_ui(bgr)
-
-        # Fast full-frame baseline: one raw pass + one enhanced pass.
+        # Fast full-frame baseline: run raw scan first.
         all_items.extend(
             self._collect_ocr_items(
                 scan_img,
@@ -560,6 +557,17 @@ class DesktopOCRTool:
                 coord_scale=full_scan_scale,
             )
         )
+        base_items = self._deduplicate_items(all_items)
+        missing_targets: list[str] = []
+        if targets:
+            missing_targets = self._resolve_missing_targets(base_items, targets, threshold=stop_threshold)
+            if not missing_targets:
+                base_items.sort(key=lambda x: (x.top, x.left))
+                return base_items
+
+        # Fallback full-frame enhanced scan only when target-driven fast pass is insufficient,
+        # or when caller asks for all OCR texts (no explicit targets).
+        enhanced_scan = self._enhance_for_dark_ui(scan_img)
         all_items.extend(
             self._collect_ocr_items(
                 enhanced_scan,
@@ -571,19 +579,20 @@ class DesktopOCRTool:
             )
         )
 
-        base_items = self._deduplicate_items(all_items)
+        current = self._deduplicate_items(all_items)
         if targets:
-            missing_targets = self._resolve_missing_targets(base_items, targets, threshold=stop_threshold)
+            missing_targets = self._resolve_missing_targets(current, targets, threshold=stop_threshold)
             if not missing_targets:
-                base_items.sort(key=lambda x: (x.top, x.left))
-                return base_items
+                current.sort(key=lambda x: (x.top, x.left))
+                return current
 
+            enhanced_full = self._enhance_for_dark_ui(bgr)
             img_h, img_w = enhanced_full.shape[:2]
             rois: list[tuple[int, int, int, int]] = []
             for target in missing_targets:
                 rois.extend(
                     self._propose_target_rois(
-                        base_items,
+                        current,
                         target,
                         screen_left=screen_left,
                         screen_top=screen_top,
@@ -593,7 +602,7 @@ class DesktopOCRTool:
                 )
             rois.extend(
                 self._propose_dense_rois(
-                    base_items,
+                    current,
                     screen_left=screen_left,
                     screen_top=screen_top,
                     img_w=img_w,

@@ -169,10 +169,12 @@ def locate_candidate_matches(
     target: str,
     threshold: float,
     topk: int,
+    *,
+    preindexed_items: list[dict[str, Any]] | None = None,
 ) -> list[dict[str, Any]]:
     threshold_levels = [threshold, max(0.45, threshold - 0.1), 0.36]
     all_candidates: list[dict[str, Any]] = []
-    match_index = tool.build_match_index(items, case_sensitive=False)
+    match_index = preindexed_items or tool.build_match_index(items, case_sensitive=False)
     for th in threshold_levels:
         all_candidates.extend(
             tool.find_text(
@@ -243,8 +245,16 @@ def locate_matches_strict(
     screen_top: int,
     min_score: float,
     verify_topk: int = 4,
+    preindexed_items: list[dict[str, Any]] | None = None,
 ) -> list[dict[str, Any]]:
-    candidates = locate_candidate_matches(tool, items, target, threshold, max(topk, verify_topk))
+    candidates = locate_candidate_matches(
+        tool,
+        items,
+        target,
+        threshold,
+        max(topk, verify_topk),
+        preindexed_items=preindexed_items,
+    )
     return verify_candidate_matches(
         tool=tool,
         image_bgr=image_bgr,
@@ -954,6 +964,7 @@ class OCRMouseTesterGUI:
             timings["image_load_sec"] += max(0.0, time.perf_counter() - image_load_started)
             if image_bgr is None:
                 raise FileNotFoundError(f"Cannot read screenshot: {config['image_path']}")
+            match_index = tool.build_match_index(items, case_sensitive=False)
 
             mouse = HumanMouse(speed=config["speed"], stop_event=self.stop_event)
             rounds = config["rounds"]
@@ -1003,6 +1014,7 @@ class OCRMouseTesterGUI:
                                 target=target,
                                 threshold=effective_threshold,
                                 topk=config["topk"],
+                                preindexed_items=match_index,
                             )
                             if plain_matches:
                                 need_strict, strict_reason = should_use_strict_verification(
@@ -1080,6 +1092,7 @@ class OCRMouseTesterGUI:
                                 target=target,
                                 threshold=effective_threshold,
                                 topk=config["topk"],
+                                preindexed_items=match_index,
                             )
                             if plain_matches:
                                 best_matches = []
