@@ -228,8 +228,11 @@ def _run_once(
 ) -> dict[str, Any]:
     expected_targets_set: set[str] = set()
     for case in cases:
-        for query in _case_query_texts(case):
-            expected_targets_set.add(query)
+        case_queries = _case_query_texts(case)
+        if case_queries:
+            # Use primary query only for OCR-stage early-stop guidance.
+            # Alternative queries are for matching tolerance, not mandatory simultaneous presence.
+            expected_targets_set.add(case_queries[0])
     expected_targets = sorted(expected_targets_set)
 
     ocr_started = time.perf_counter()

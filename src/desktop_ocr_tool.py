@@ -124,7 +124,8 @@ class DesktopOCRTool:
     @staticmethod
     def _detect_runtime(*, use_gpu: bool = True) -> tuple[str, list[str], dict[str, Any]]:
         providers: list[str] = []
-        kwargs: dict[str, Any] = {}
+        # Desktop UI text is predominantly horizontal, so disabling cls improves latency.
+        kwargs: dict[str, Any] = {"use_cls": False}
         mode = "cpu"
         try:
             import onnxruntime as ort
@@ -533,9 +534,10 @@ class DesktopOCRTool:
         # Downscale very large screenshots for fast full-frame scan.
         full_h, full_w = bgr.shape[:2]
         max_side = max(full_w, full_h)
+        scan_max_side = 2048 if targets else 2560
         full_scan_scale = 1.0
-        if max_side > 2560:
-            full_scan_scale = 2560.0 / max_side
+        if max_side > scan_max_side:
+            full_scan_scale = float(scan_max_side) / max_side
             scan_img = cv2.resize(
                 bgr,
                 None,
@@ -565,27 +567,10 @@ class DesktopOCRTool:
                 base_items.sort(key=lambda x: (x.top, x.left))
                 return base_items
 
-        # Fallback full-frame enhanced scan only when target-driven fast pass is insufficient,
-        # or when caller asks for all OCR texts (no explicit targets).
-        enhanced_scan = self._enhance_for_dark_ui(scan_img)
-        all_items.extend(
-            self._collect_ocr_items(
-                enhanced_scan,
-                screen_left=screen_left,
-                screen_top=screen_top,
-                min_score=min_score,
-                scale=1.12,
-                coord_scale=full_scan_scale,
-            )
-        )
-
-        current = self._deduplicate_items(all_items)
+        current = base_items
         if targets:
-            missing_targets = self._resolve_missing_targets(current, targets, threshold=stop_threshold)
-            if not missing_targets:
-                current.sort(key=lambda x: (x.top, x.left))
-                return current
-
+            # In target-driven mode, avoid another expensive full-frame OCR pass.
+            # Only run compact ROI rescans for unresolved targets.
             enhanced_full = self._enhance_for_dark_ui(bgr)
             img_h, img_w = enhanced_full.shape[:2]
             rois: list[tuple[int, int, int, int]] = []
@@ -610,7 +595,7 @@ class DesktopOCRTool:
                     max_rois=max(2, int(priority_tile_limit)),
                 )
             )
-            merged_rois = self._merge_rois(rois, max_rois=max(2, int(priority_tile_limit) + 1))
+            merged_rois = self._merge_rois(rois, max_rois=max(1, int(priority_tile_limit)))
 
             for idx, (x, y, w, h) in enumerate(merged_rois):
                 roi = enhanced_full[y : y + h, x : x + w]
@@ -620,18 +605,34 @@ class DesktopOCRTool:
                         screen_left=screen_left,
                         screen_top=screen_top,
                         min_score=min_score,
-                        scale=1.45,
+                        scale=1.30,
                         offset_x=x,
                         offset_y=y,
                     )
                 )
-                if idx + 1 < max(1, int(priority_tile_limit)):
-                    continue
                 current = self._deduplicate_items(all_items)
                 unresolved = self._resolve_missing_targets(current, targets, threshold=stop_threshold)
                 if not unresolved:
                     current.sort(key=lambda x: (x.top, x.left))
                     return current
+            current = self._deduplicate_items(all_items)
+            if not current:
+                return []
+            current.sort(key=lambda x: (x.top, x.left))
+            return current
+
+        # No explicit targets: favor completeness with an enhanced full-frame pass.
+        enhanced_scan = self._enhance_for_dark_ui(scan_img)
+        all_items.extend(
+            self._collect_ocr_items(
+                enhanced_scan,
+                screen_left=screen_left,
+                screen_top=screen_top,
+                min_score=min_score,
+                scale=1.12,
+                coord_scale=full_scan_scale,
+            )
+        )
 
         items = self._deduplicate_items(all_items)
         if not items:

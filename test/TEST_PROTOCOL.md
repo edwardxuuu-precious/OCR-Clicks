@@ -24,6 +24,7 @@ Each case in `test/ground_truth.json` should follow:
 7. `tolerance_px`: position tolerance in pixels
 
 For Chinese-heavy screenshots, always provide Chinese entries with `lang: "zh"` and Chinese `query_texts` / `expected_texts`.
+`query_texts[0]` is treated as the primary OCR-stage early-stop target; the rest are matching tolerance variants.
 
 ## 2. Evaluation Goal Priority
 
