@@ -135,6 +135,13 @@ def _parse_runtime_mode(cfg: dict[str, Any]) -> str:
     return mode
 
 
+def _parse_cache_policy(cfg: dict[str, Any]) -> str:
+    policy = str(cfg.get("cache_policy", "strict_no_cache")).strip().lower()
+    if policy not in {"strict_no_cache", "normal"}:
+        raise ValueError("cache_policy must be one of: strict_no_cache, normal")
+    return policy
+
+
 def _resolve_use_gpu_requested(runtime_mode: str) -> bool:
     # "auto" requests GPU, while DesktopOCRTool handles CPU fallback automatically.
     return runtime_mode != "cpu"
@@ -484,9 +491,14 @@ def _build_summary_markdown(results: dict[str, Any]) -> str:
     lines.append("")
     lines.append(f"- generated_at_utc: {results['generated_at_utc']}")
     lines.append(f"- image: {results['image_path']}")
-    lines.append(f"- warmup_runs: {results['warmup_runs']}")
+    lines.append(
+        f"- warmup_runs: {results['warmup_runs']}"
+        f" (requested={results.get('warmup_runs_requested', results['warmup_runs'])})"
+    )
     lines.append(f"- measure_runs: {results['measure_runs']}")
     lines.append(f"- runtime_mode_requested: {results['runtime_mode_requested']}")
+    lines.append(f"- cache_policy: {results.get('cache_policy', 'strict_no_cache')}")
+    lines.append(f"- recreate_engine_per_run: {results.get('recreate_engine_per_run', False)}")
     lines.append(
         f"- runtime_mode_actual: {runtime.get('acceleration_mode')} "
         f"(gpu_enabled={runtime.get('gpu_enabled')})"
@@ -572,6 +584,8 @@ def main() -> None:
     warmup_runs = int(cfg.get("warmup_runs", 1))
     measure_runs = int(cfg.get("measure_runs", 5))
     runtime_mode = _parse_runtime_mode(cfg)
+    cache_policy = _parse_cache_policy(cfg)
+    recreate_engine_per_run = cache_policy == "strict_no_cache"
     use_gpu = _resolve_use_gpu_requested(runtime_mode)
     compare_with_previous = bool(cfg.get("compare_with_previous", True))
     screen_left = int(cfg.get("screen_left", 0))
@@ -587,26 +601,32 @@ def main() -> None:
     out_dir = out_root / timestamp
     out_dir.mkdir(parents=True, exist_ok=True)
 
-    tool = DesktopOCRTool(use_gpu=use_gpu)
-    runtime_info = tool.get_runtime_info()
+    runtime_info: dict[str, Any] = {}
+    effective_warmup_runs = max(0, warmup_runs)
+    if recreate_engine_per_run and effective_warmup_runs > 0:
+        # In strict no-cache mode, warmup itself would bias timing.
+        effective_warmup_runs = 0
 
-    for _ in range(max(0, warmup_runs)):
-        _run_once(
-            tool,
-            image_path=image_path,
-            screen_left=screen_left,
-            screen_top=screen_top,
-            min_score=min_score,
-            threshold=threshold,
-            topk=topk,
-            case_sensitive=case_sensitive,
-            default_tolerance=position_tolerance_px,
-            cases=cases,
-        )
-
-    runs: list[dict[str, Any]] = []
-    for _ in range(max(1, measure_runs)):
-        runs.append(
+    if recreate_engine_per_run:
+        for _ in range(effective_warmup_runs):
+            warm_tool = DesktopOCRTool(use_gpu=use_gpu)
+            _ = warm_tool.get_runtime_info()
+            _run_once(
+                warm_tool,
+                image_path=image_path,
+                screen_left=screen_left,
+                screen_top=screen_top,
+                min_score=min_score,
+                threshold=threshold,
+                topk=topk,
+                case_sensitive=case_sensitive,
+                default_tolerance=position_tolerance_px,
+                cases=cases,
+            )
+    else:
+        tool = DesktopOCRTool(use_gpu=use_gpu)
+        runtime_info = tool.get_runtime_info()
+        for _ in range(effective_warmup_runs):
             _run_once(
                 tool,
                 image_path=image_path,
@@ -619,7 +639,44 @@ def main() -> None:
                 default_tolerance=position_tolerance_px,
                 cases=cases,
             )
-        )
+
+    runs: list[dict[str, Any]] = []
+    for _ in range(max(1, measure_runs)):
+        if recreate_engine_per_run:
+            run_tool = DesktopOCRTool(use_gpu=use_gpu)
+            if not runtime_info:
+                runtime_info = run_tool.get_runtime_info()
+            runs.append(
+                _run_once(
+                    run_tool,
+                    image_path=image_path,
+                    screen_left=screen_left,
+                    screen_top=screen_top,
+                    min_score=min_score,
+                    threshold=threshold,
+                    topk=topk,
+                    case_sensitive=case_sensitive,
+                    default_tolerance=position_tolerance_px,
+                    cases=cases,
+                )
+            )
+        else:
+            runs.append(
+                _run_once(
+                    tool,
+                    image_path=image_path,
+                    screen_left=screen_left,
+                    screen_top=screen_top,
+                    min_score=min_score,
+                    threshold=threshold,
+                    topk=topk,
+                    case_sensitive=case_sensitive,
+                    default_tolerance=position_tolerance_px,
+                    cases=cases,
+                )
+            )
+    if not runtime_info:
+        runtime_info = DesktopOCRTool(use_gpu=use_gpu).get_runtime_info()
     aggregate = _aggregate_runs(runs)
 
     baseline_reference: dict[str, Any] | None = None
@@ -635,7 +692,10 @@ def main() -> None:
         if baseline_results_path and baseline_results_path.exists():
             previous_payload = _load_json(baseline_results_path)
             previous_signature = str(previous_payload.get("ground_truth_signature", "")).strip()
-            if not previous_signature:
+            previous_cache_policy = str(previous_payload.get("cache_policy", "")).strip().lower()
+            if previous_cache_policy != cache_policy:
+                comparison_skip_reason = "cache_policy_mismatch"
+            elif not previous_signature:
                 comparison_skip_reason = "baseline_missing_ground_truth_signature"
             elif previous_signature != ground_truth_signature:
                 comparison_skip_reason = "ground_truth_signature_mismatch"
@@ -659,9 +719,12 @@ def main() -> None:
         "image_path": str(image_path),
         "ground_truth_path": str(gt_path),
         "ground_truth_signature": ground_truth_signature,
-        "warmup_runs": warmup_runs,
+        "warmup_runs_requested": warmup_runs,
+        "warmup_runs": effective_warmup_runs,
         "measure_runs": measure_runs,
         "runtime_mode_requested": runtime_mode,
+        "cache_policy": cache_policy,
+        "recreate_engine_per_run": recreate_engine_per_run,
         "benchmark": {
             "runtime_info": runtime_info,
             "runs": runs,

@@ -62,14 +62,16 @@ Iteration comparison metrics (current run vs previous run):
 ## 4. Fixed Test Method
 
 1. Keep the same config and ground truth files.
-2. Run warmup loops first (`warmup_runs`).
-3. Run measurement loops (`measure_runs`) in one runtime mode only.
-4. Use `runtime_mode = auto` in config by default:
+2. Enforce `cache_policy = strict_no_cache` (default standard mode).
+3. Set `warmup_runs = 0` in strict no-cache mode.
+4. Run measurement loops (`measure_runs`) in one runtime mode only.
+5. Recreate OCR engine for every measured run (no cross-run instance reuse).
+6. Use `runtime_mode = auto` in config by default:
    - GPU machine: tool will use GPU when available.
    - Non-GPU machine: tool will automatically fall back to CPU.
-5. Use the same `min_score`, `threshold`, `topk`, and `case_sensitive` values across optimization iterations.
-6. Use the same target list and expected centers from `ground_truth.json`.
-7. Do not change the image during a benchmark campaign.
+7. Use the same `min_score`, `threshold`, `topk`, and `case_sensitive` values across optimization iterations.
+8. Use the same target list and expected centers from `ground_truth.json`.
+9. Do not change the image during a benchmark campaign.
 
 Command:
 
@@ -98,6 +100,8 @@ Each run directory contains:
 
 `results.json` includes `ground_truth_signature`.  
 Iteration comparison is only executed when baseline and current signatures are identical.
+`results.json` also includes `cache_policy` and `recreate_engine_per_run` for auditability.
+Iteration comparison is also skipped when `cache_policy` differs.
 
 Do not overwrite previous result folders.
 

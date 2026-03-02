@@ -7,9 +7,10 @@
   "topk": 5,
   "case_sensitive": false,
   "position_tolerance_px": 35,
-  "warmup_runs": 1,
+  "warmup_runs": 0,
   "measure_runs": 5,
   "runtime_mode": "auto",
+  "cache_policy": "strict_no_cache",
   "compare_with_previous": true,
   "ground_truth_path": "test/ground_truth.json"
 }
