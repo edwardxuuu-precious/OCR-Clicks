@@ -1,0 +1,16 @@
+# Python bytecode/cache
+__pycache__/
+*.py[cod]
+
+# Virtual environments
+.venv/
+venv/
+
+# Runtime artifacts
+captures/
+configs/
+*.log
+
+# OS/editor noise
+.DS_Store
+Thumbs.db
