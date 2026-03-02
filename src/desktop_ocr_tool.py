@@ -40,14 +40,20 @@ class OCRItem:
 
 
 class DesktopOCRTool:
-    def __init__(self, use_gpu: bool = True) -> None:
+    def __init__(
+        self,
+        use_gpu: bool = True,
+        center_bias_map: dict[str, list[float] | tuple[float, float]] | None = None,
+    ) -> None:
         self.use_gpu_requested = bool(use_gpu)
+        self._center_bias_map: dict[str, tuple[int, int]] = {}
         self._dll_dir_handles: list[Any] = []
         self._bootstrap_windows_gpu_dll_paths()
         self.acceleration_mode, self.available_providers, runtime_kwargs = self._detect_runtime(
             use_gpu=self.use_gpu_requested
         )
         self.ocr_engine = RapidOCR(**runtime_kwargs)
+        self.set_center_bias_map(center_bias_map or {})
 
     def _bootstrap_windows_gpu_dll_paths(self) -> None:
         if os.name != "nt":
@@ -124,8 +130,7 @@ class DesktopOCRTool:
     @staticmethod
     def _detect_runtime(*, use_gpu: bool = True) -> tuple[str, list[str], dict[str, Any]]:
         providers: list[str] = []
-        # Desktop UI text is predominantly horizontal, so disabling cls improves latency.
-        kwargs: dict[str, Any] = {"use_cls": False}
+        kwargs: dict[str, Any] = {"use_cls": False, "rec_batch_num": 12, "det_limit_side_len": 736}
         mode = "cpu"
         try:
             import onnxruntime as ort
@@ -197,6 +202,59 @@ class DesktopOCRTool:
         text = text.lower().strip()
         # Remove spaces and lightweight punctuation noise before fuzzy matching.
         return re.sub(r"[\s`'\".,:;|_~!@#$%^&*()\-+=\[\]{}<>/?\\]+", "", text)
+
+    def set_center_bias_map(self, bias_map: dict[str, list[float] | tuple[float, float]]) -> None:
+        normalized: dict[str, tuple[int, int]] = {}
+        for raw_key, raw_val in bias_map.items():
+            key = self._normalize_match_text(str(raw_key))
+            if not key:
+                continue
+            if not isinstance(raw_val, (list, tuple)) or len(raw_val) != 2:
+                continue
+            try:
+                dx = int(round(float(raw_val[0])))
+                dy = int(round(float(raw_val[1])))
+            except Exception:
+                continue
+            if dx == 0 and dy == 0:
+                continue
+            normalized[key] = (dx, dy)
+        self._center_bias_map = normalized
+
+    def _resolve_center_bias(self, target_text: str, match_text: str) -> tuple[int, int]:
+        if not self._center_bias_map:
+            return (0, 0)
+        target_key = self._normalize_match_text(target_text)
+        if target_key and target_key in self._center_bias_map:
+            return self._center_bias_map[target_key]
+        match_key = self._normalize_match_text(match_text)
+        if match_key and match_key in self._center_bias_map:
+            return self._center_bias_map[match_key]
+        return (0, 0)
+
+    @staticmethod
+    def _apply_center_bias(match: dict[str, Any], dx: int, dy: int) -> dict[str, Any]:
+        if dx == 0 and dy == 0:
+            return match
+        result = dict(match)
+        center = result.get("center")
+        if isinstance(center, list) and len(center) == 2:
+            result["center"] = [int(center[0]) + dx, int(center[1]) + dy]
+        for key in ("left", "right"):
+            if key in result:
+                result[key] = int(result[key]) + dx
+        for key in ("top", "bottom"):
+            if key in result:
+                result[key] = int(result[key]) + dy
+        box = result.get("box")
+        if isinstance(box, list):
+            shifted_box: list[list[int]] = []
+            for pt in box:
+                if isinstance(pt, list) and len(pt) == 2:
+                    shifted_box.append([int(pt[0]) + dx, int(pt[1]) + dy])
+            if shifted_box:
+                result["box"] = shifted_box
+        return result
 
     @staticmethod
     def _enhance_for_dark_ui(bgr: np.ndarray) -> np.ndarray:
@@ -768,19 +826,21 @@ class DesktopOCRTool:
             if final_score < threshold:
                 continue
 
+            raw_match = {
+                "target": target_text,
+                "match_text": item.text,
+                "match_score": round(final_score, 4),
+                "ocr_score": round(item.score, 4),
+                "center": item.center,
+                "left": item.left,
+                "top": item.top,
+                "right": item.right,
+                "bottom": item.bottom,
+                "box": item.box,
+            }
+            dx, dy = self._resolve_center_bias(target_text, item.text)
             matches.append(
-                {
-                    "target": target_text,
-                    "match_text": item.text,
-                    "match_score": round(final_score, 4),
-                    "ocr_score": round(item.score, 4),
-                    "center": item.center,
-                    "left": item.left,
-                    "top": item.top,
-                    "right": item.right,
-                    "bottom": item.bottom,
-                    "box": item.box,
-                }
+                self._apply_center_bias(raw_match, dx, dy)
             )
 
         matches.sort(key=lambda x: (x["match_score"], x["ocr_score"]), reverse=True)

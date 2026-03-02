@@ -25,6 +25,7 @@ Each case in `test/ground_truth.json` should follow:
 
 For Chinese-heavy screenshots, always provide Chinese entries with `lang: "zh"` and Chinese `query_texts` / `expected_texts`.
 `query_texts[0]` is treated as the primary OCR-stage early-stop target; the rest are matching tolerance variants.
+When target-level click calibration is used, keep `target_center_bias` in benchmark config aligned with these primary query texts.
 
 ## 2. Evaluation Goal Priority
 

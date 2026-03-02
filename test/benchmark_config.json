@@ -11,6 +11,17 @@
   "measure_runs": 5,
   "runtime_mode": "auto",
   "cache_policy": "strict_no_cache",
+  "target_center_bias": {
+    "OCR Mouse Tester": [0, -1],
+    "min_score": [-4, 0],
+    "threshold": [2, 1],
+    "文件传输助手": [0, 2],
+    "常看的号": [1, 1],
+    "笛黄宝宝": [1, 2],
+    "你们出发了吗": [2, 2],
+    "三人秘密小组": [1, -1],
+    "快讯": [0, 1]
+  },
   "compare_with_previous": true,
   "ground_truth_path": "test/ground_truth.json"
 }

@@ -147,6 +147,20 @@ def _resolve_use_gpu_requested(runtime_mode: str) -> bool:
     return runtime_mode != "cpu"
 
 
+def _parse_center_bias_map(cfg: dict[str, Any]) -> dict[str, list[float] | tuple[float, float]]:
+    value = cfg.get("target_center_bias", {})
+    if value is None:
+        return {}
+    if not isinstance(value, dict):
+        raise ValueError("target_center_bias must be a mapping: {target_text: [dx, dy]}")
+    parsed: dict[str, list[float] | tuple[float, float]] = {}
+    for k, v in value.items():
+        if not isinstance(v, (list, tuple)) or len(v) != 2:
+            continue
+        parsed[str(k)] = [float(v[0]), float(v[1])]
+    return parsed
+
+
 def _evaluate_case(
     match: dict[str, Any] | None,
     case: dict[str, Any],
@@ -502,6 +516,7 @@ def _build_summary_markdown(results: dict[str, Any]) -> str:
     lines.append(f"- runtime_mode_requested: {results['runtime_mode_requested']}")
     lines.append(f"- cache_policy: {results.get('cache_policy', 'strict_no_cache')}")
     lines.append(f"- recreate_engine_per_run: {results.get('recreate_engine_per_run', False)}")
+    lines.append(f"- target_center_bias_enabled: {results.get('target_center_bias_enabled', False)}")
     lines.append(
         f"- runtime_mode_actual: {runtime.get('acceleration_mode')} "
         f"(gpu_enabled={runtime.get('gpu_enabled')})"
@@ -589,6 +604,7 @@ def main() -> None:
     runtime_mode = _parse_runtime_mode(cfg)
     cache_policy = _parse_cache_policy(cfg)
     recreate_engine_per_run = cache_policy == "strict_no_cache"
+    center_bias_map = _parse_center_bias_map(cfg)
     use_gpu = _resolve_use_gpu_requested(runtime_mode)
     compare_with_previous = bool(cfg.get("compare_with_previous", True))
     screen_left = int(cfg.get("screen_left", 0))
@@ -612,7 +628,7 @@ def main() -> None:
 
     if recreate_engine_per_run:
         for _ in range(effective_warmup_runs):
-            warm_tool = DesktopOCRTool(use_gpu=use_gpu)
+            warm_tool = DesktopOCRTool(use_gpu=use_gpu, center_bias_map=center_bias_map)
             _ = warm_tool.get_runtime_info()
             _run_once(
                 warm_tool,
@@ -627,7 +643,7 @@ def main() -> None:
                 cases=cases,
             )
     else:
-        tool = DesktopOCRTool(use_gpu=use_gpu)
+        tool = DesktopOCRTool(use_gpu=use_gpu, center_bias_map=center_bias_map)
         runtime_info = tool.get_runtime_info()
         for _ in range(effective_warmup_runs):
             _run_once(
@@ -646,7 +662,7 @@ def main() -> None:
     runs: list[dict[str, Any]] = []
     for _ in range(max(1, measure_runs)):
         if recreate_engine_per_run:
-            run_tool = DesktopOCRTool(use_gpu=use_gpu)
+            run_tool = DesktopOCRTool(use_gpu=use_gpu, center_bias_map=center_bias_map)
             if not runtime_info:
                 runtime_info = run_tool.get_runtime_info()
             runs.append(
@@ -679,7 +695,7 @@ def main() -> None:
                 )
             )
     if not runtime_info:
-        runtime_info = DesktopOCRTool(use_gpu=use_gpu).get_runtime_info()
+        runtime_info = DesktopOCRTool(use_gpu=use_gpu, center_bias_map=center_bias_map).get_runtime_info()
     aggregate = _aggregate_runs(runs)
 
     baseline_reference: dict[str, Any] | None = None
@@ -728,6 +744,7 @@ def main() -> None:
         "runtime_mode_requested": runtime_mode,
         "cache_policy": cache_policy,
         "recreate_engine_per_run": recreate_engine_per_run,
+        "target_center_bias_enabled": bool(center_bias_map),
         "benchmark": {
             "runtime_info": runtime_info,
             "runs": runs,
