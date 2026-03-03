@@ -344,6 +344,8 @@ class OCRMouseTesterGUI:
         self.dry_run_var = tk.BooleanVar(value=False)
         self.strict_mode_var = tk.BooleanVar(value=True)
         self.smart_optimize_var = tk.BooleanVar(value=True)
+        self.match_mode_var = tk.StringVar(value="all")  # all, first, last
+        self.match_index_var = tk.StringVar(value="1")  # for specific index mode
         self.perf_table: ttk.Treeview | None = None
 
         self._build_ui()
@@ -405,6 +407,17 @@ class OCRMouseTesterGUI:
             variable=self.use_gpu_var,
             command=self._on_use_gpu_toggled,
         ).grid(row=4, column=2, columnspan=2, sticky="w", padx=6, pady=6)
+
+        # Match mode selection
+        match_frame = ttk.LabelFrame(config_frame, text="Match Mode")
+        match_frame.grid(row=5, column=0, columnspan=2, sticky="ew", padx=6, pady=6)
+        
+        ttk.Radiobutton(match_frame, text="All", variable=self.match_mode_var, value="all").pack(side=tk.LEFT, padx=4)
+        ttk.Radiobutton(match_frame, text="First", variable=self.match_mode_var, value="first").pack(side=tk.LEFT, padx=4)
+        ttk.Radiobutton(match_frame, text="Last", variable=self.match_mode_var, value="last").pack(side=tk.LEFT, padx=4)
+        ttk.Radiobutton(match_frame, text="#", variable=self.match_mode_var, value="specific").pack(side=tk.LEFT, padx=4)
+        ttk.Spinbox(match_frame, from_=1, to=20, width=3, textvariable=self.match_index_var).pack(side=tk.LEFT, padx=2)
+        ttk.Label(match_frame, text="of topk").pack(side=tk.LEFT, padx=2)
 
         target_frame = ttk.LabelFrame(root_frame, text="Targets")
         target_frame.pack(fill=tk.X, padx=2, pady=8)
@@ -592,6 +605,8 @@ class OCRMouseTesterGUI:
             "dry_run": bool(self.dry_run_var.get()),
             "strict_mode": bool(self.strict_mode_var.get()),
             "smart_optimize": bool(self.smart_optimize_var.get()),
+            "match_mode": str(self.match_mode_var.get()),
+            "match_index": int(self.match_index_var.get()),
             "use_gpu": bool(self.use_gpu_var.get()),
         }
         if cfg["circle_min"] < 1 or cfg["circle_max"] < cfg["circle_min"]:
@@ -674,6 +689,8 @@ class OCRMouseTesterGUI:
         self.dry_run_var.set(bool(params.get("dry_run", self.dry_run_var.get())))
         self.strict_mode_var.set(bool(params.get("strict_mode", self.strict_mode_var.get())))
         self.smart_optimize_var.set(bool(params.get("smart_optimize", self.smart_optimize_var.get())))
+        self.match_mode_var.set(str(params.get("match_mode", self.match_mode_var.get())))
+        self.match_index_var.set(str(params.get("match_index", self.match_index_var.get())))
 
         raw = data.get("targets_raw")
         targets = data.get("targets", [])
@@ -1204,6 +1221,19 @@ class OCRMouseTesterGUI:
                         )
                         continue
 
+                    # Filter matches based on match_mode
+                    match_mode = config.get("match_mode", "all")
+                    match_index = config.get("match_index", 1)
+                    
+                    if match_mode == "first" and best_matches:
+                        best_matches = [best_matches[0]]
+                    elif match_mode == "last" and best_matches:
+                        best_matches = [best_matches[-1]]
+                    elif match_mode == "specific" and best_matches:
+                        idx = max(0, min(match_index - 1, len(best_matches) - 1))
+                        best_matches = [best_matches[idx]]
+                    # else: match_mode == "all", keep all matches
+                    
                     total_hits = len(best_matches)
                     for hit_idx, best in enumerate(best_matches, start=1):
                         if self.stop_event.is_set():
