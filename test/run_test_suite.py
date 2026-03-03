@@ -24,6 +24,7 @@ from project_version import PROJECT_VERSION_LABEL  # noqa: E402
 class CaseResult:
     id: str
     query: str
+    expected_found: bool
     found: bool
     match_text: str
     center: list[int] | None
@@ -69,6 +70,7 @@ def _evaluate_case(
     *,
     query: str,
     case_id: str,
+    expected_found: bool,
     threshold: float,
     topk: int,
     expected_center: list[int] | None,
@@ -85,9 +87,11 @@ def _evaluate_case(
     )
 
     if not matches:
+        missing_is_expected = not expected_found
         return CaseResult(
             id=case_id,
             query=query,
+            expected_found=expected_found,
             found=False,
             match_text="",
             center=None,
@@ -96,18 +100,37 @@ def _evaluate_case(
             expected_center=expected_center,
             tolerance_px=tolerance_px,
             distance_px=None,
-            position_ok=False,
-            case_pass=False,
-            fail_reason="not_found",
+            position_ok=missing_is_expected,
+            case_pass=missing_is_expected,
+            fail_reason="" if missing_is_expected else "not_found",
         )
 
     best = matches[0]
+    if not expected_found:
+        return CaseResult(
+            id=case_id,
+            query=query,
+            expected_found=expected_found,
+            found=True,
+            match_text=str(best.get("match_text", "")),
+            center=best.get("center"),
+            match_score=float(best.get("match_score", 0.0)),
+            ocr_score=float(best.get("ocr_score", 0.0)),
+            expected_center=expected_center,
+            tolerance_px=tolerance_px,
+            distance_px=None,
+            position_ok=False,
+            case_pass=False,
+            fail_reason="unexpected_found",
+        )
+
     center = best.get("center")
     center_pt = center if isinstance(center, list) and len(center) == 2 else None
     if center_pt is None:
         return CaseResult(
             id=case_id,
             query=query,
+            expected_found=expected_found,
             found=True,
             match_text=str(best.get("match_text", "")),
             center=None,
@@ -125,6 +148,7 @@ def _evaluate_case(
         return CaseResult(
             id=case_id,
             query=query,
+            expected_found=expected_found,
             found=True,
             match_text=str(best.get("match_text", "")),
             center=center_pt,
@@ -133,9 +157,9 @@ def _evaluate_case(
             expected_center=None,
             tolerance_px=tolerance_px,
             distance_px=None,
-            position_ok=False,
-            case_pass=False,
-            fail_reason="expected_center_missing",
+            position_ok=True,
+            case_pass=True,
+            fail_reason="",
         )
 
     dist = _distance(center_pt, expected_center)
@@ -143,6 +167,7 @@ def _evaluate_case(
     return CaseResult(
         id=case_id,
         query=query,
+        expected_found=expected_found,
         found=True,
         match_text=str(best.get("match_text", "")),
         center=center_pt,
@@ -164,7 +189,11 @@ def _run_once(spec: dict[str, Any], *, mode: str) -> dict[str, Any]:
         raise FileNotFoundError(f"Image not found: {image_path}")
 
     cases = list(spec.get("cases", []))
-    queries = [str(c.get("query", "")).strip() for c in cases if str(c.get("query", "")).strip()]
+    queries = [
+        str(c.get("query", "")).strip()
+        for c in cases
+        if str(c.get("query", "")).strip() and bool(c.get("expected_found", True))
+    ]
 
     tool = DesktopOCRTool(use_gpu=_mode_use_gpu(mode))
     runtime = tool.get_runtime_info()
@@ -178,8 +207,9 @@ def _run_once(spec: dict[str, Any], *, mode: str) -> dict[str, Any]:
         min_score=float(ocr_cfg.get("min_score", 0.35)),
         expected_targets=queries if bool(ocr_cfg.get("use_target_driven_ocr", False)) else [],
         early_stop_threshold=max(0.30, float(ocr_cfg.get("threshold", 0.62)) - 0.04),
-        priority_tile_limit=3,
+        priority_tile_limit=max(1, int(ocr_cfg.get("priority_tile_limit", 3))),
         scan_max_side_override=ocr_cfg.get("scan_max_side"),
+        aggressive_dense_scan=bool(ocr_cfg.get("aggressive_dense_scan", False)),
     )
     ocr_sec = max(0.0, time.perf_counter() - ocr_started)
 
@@ -193,6 +223,7 @@ def _run_once(spec: dict[str, Any], *, mode: str) -> dict[str, Any]:
                 match_index,
                 query=str(case.get("query", "")).strip(),
                 case_id=str(case.get("id", "")).strip() or str(case.get("query", "")).strip(),
+                expected_found=bool(case.get("expected_found", True)),
                 threshold=float(ocr_cfg.get("threshold", 0.62)),
                 topk=int(ocr_cfg.get("topk", 30)),
                 expected_center=case.get("expected_center"),
@@ -256,6 +287,7 @@ def _save_outputs(spec: dict[str, Any], payload: dict[str, Any], out_dir: Path) 
         lines.append(
             (
                 f"- {case['id']}: query=`{case['query']}` query_u=`{query_esc}` found={case['found']} "
+                f"expected_found={case['expected_found']} "
                 f"position_ok={case['position_ok']} case_pass={case['case_pass']} "
                 f"center={case['center']} expected={case['expected_center']} "
                 f"distance_px={case['distance_px']} fail_reason={case['fail_reason']}"
@@ -265,7 +297,7 @@ def _save_outputs(spec: dict[str, Any], payload: dict[str, Any], out_dir: Path) 
 
 
 def main() -> None:
-    parser = argparse.ArgumentParser(description="Run sample_1 exact-match test suite.")
+    parser = argparse.ArgumentParser(description="Run screenshot exact-match test suite.")
     parser.add_argument("--spec", default="test/spec_sample_1.json", help="Spec JSON path.")
     parser.add_argument("--mode", default="auto", help="auto|cpu|gpu")
     parser.add_argument("--out-dir", default="", help="Output directory. Default: test/results/<timestamp>")

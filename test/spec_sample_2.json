@@ -1,0 +1,90 @@
+{
+  "name": "sample_2_exact_targets",
+  "image_path": "test/test_sample_img/sample_2.png",
+  "mode_time_budget_sec": {
+    "gpu": 6.0,
+    "cpu": 220.0
+  },
+  "ocr_config": {
+    "screen_left": 0,
+    "screen_top": 0,
+    "min_score": 0.22,
+    "threshold": 0.62,
+    "topk": 30,
+    "use_target_driven_ocr": true,
+    "scan_max_side": 3400,
+    "priority_tile_limit": 6,
+    "aggressive_dense_scan": true
+  },
+  "cases": [
+    {
+      "id": "sample2_didibaby",
+      "query": "\u7b1b\u7b1b\u5b9d\u5b9d",
+      "expected_found": true,
+      "expected_center": null,
+      "tolerance_px": 120
+    },
+    {
+      "id": "sample2_shajinggonglu",
+      "query": "\u6c99\u4e95\u516c\u8def",
+      "expected_found": true,
+      "expected_center": null,
+      "tolerance_px": 120
+    },
+    {
+      "id": "sample2_meirong",
+      "query": "\u7f8e\u5bb9",
+      "expected_found": true,
+      "expected_center": null,
+      "tolerance_px": 120
+    },
+    {
+      "id": "sample2_weixinzhifu",
+      "query": "\u5fae\u4fe1\u652f\u4ed8",
+      "expected_found": true,
+      "expected_center": [
+        2067,
+        1385
+      ],
+      "tolerance_px": 120
+    },
+    {
+      "id": "sample2_runfuerqi",
+      "query": "\u6da6\u5e9c\u4e8c\u671f",
+      "expected_found": true,
+      "expected_center": [
+        2107,
+        1339
+      ],
+      "tolerance_px": 140
+    },
+    {
+      "id": "sample2_zhishuo",
+      "query": "\u4e4b\u8bf4",
+      "expected_found": true,
+      "expected_center": null,
+      "tolerance_px": 120
+    },
+    {
+      "id": "sample2_gambler",
+      "query": "Gambler",
+      "expected_found": true,
+      "expected_center": null,
+      "tolerance_px": 120
+    },
+    {
+      "id": "sample2_dashazi",
+      "query": "\u5927\u50bb\u5b50",
+      "expected_found": false,
+      "expected_center": null,
+      "tolerance_px": 0
+    },
+    {
+      "id": "sample2_erque",
+      "query": "\u4e8c\u7f3a",
+      "expected_found": false,
+      "expected_center": null,
+      "tolerance_px": 0
+    }
+  ]
+}

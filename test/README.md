@@ -1,54 +1,47 @@
-# Test Suite (Rebuilt)
+# Test Suite
 
-This `test` directory was rebuilt from scratch based on the latest requirement.
+This directory contains OCR regression specs and runner scripts.
 
 ## Scope
 
-- Test image set kept under `test/test_sample_img/`.
-- Current active spec is `test/spec_sample_1.json`.
-- Current runner is `test/run_test_suite.py`.
+- Image directory: `test/test_sample_img/`
+- Runner: `test/run_test_suite.py`
+- Active specs:
+  - `test/spec_sample_1.json`
+  - `test/spec_sample_2.json`
 
-## Required Targets (from requirement)
+## Spec Notes
 
-Current sample is validated against these 9 queries on `sample_1.png`:
-
-1. `笛笛宝宝`
-2. `在吗`
-3. `19:21`
-4. `公众号`
-5. `常看的号`
-6. `天道久远`
-7. `一小时前`
-8. `余下十条`
-9. `今日参考汇率`
+- `spec_sample_1.json`: baseline functional and performance regression set.
+- `spec_sample_2.json`: additional stability set (9 targets) provided by latest requirement.
+  This spec enables `aggressive_dense_scan` for harder screenshots.
 
 ## Pass Rules
 
-1. All targets must be found.
-2. Coordinates must be within each case tolerance (`distance_px <= tolerance_px`).
-3. Recognize + match stage must satisfy:
-   - GPU mode <= 4.0 seconds
-   - CPU mode <= 12.0 seconds
-4. `overall_pass` is `True` only if all above rules pass.
+1. Cases with `expected_found=true` must be detected.
+2. Cases with `expected_found=false` must remain undetected.
+3. If `expected_center` is provided for a found case, `distance_px <= tolerance_px` must hold.
+4. If `expected_center` is not provided, the case is judged by found/not-found only.
+5. `overall_pass=True` only when all case checks and performance checks pass.
 
 ## Run
 
-CPU or auto:
-
-```powershell
-.\.venv\Scripts\python.exe test\run_test_suite.py --spec test/spec_sample_1.json --mode auto
-```
-
-Force CPU:
+Run sample_1:
 
 ```powershell
 .\.venv\Scripts\python.exe test\run_test_suite.py --spec test/spec_sample_1.json --mode cpu
 ```
 
-Force GPU:
+Run sample_2:
 
 ```powershell
-.\.venv\Scripts\python.exe test\run_test_suite.py --spec test/spec_sample_1.json --mode gpu
+.\.venv\Scripts\python.exe test\run_test_suite.py --spec test/spec_sample_2.json --mode cpu
+```
+
+Run auto mode:
+
+```powershell
+.\.venv\Scripts\python.exe test\run_test_suite.py --spec test/spec_sample_2.json --mode auto
 ```
 
 ## Output
@@ -57,9 +50,9 @@ Each run writes to `test/results/<UTC_TIMESTAMP>/`:
 
 1. `results.json`
 2. `summary.md`
-3. Latest consolidated status is tracked in `test/LATEST_RESULT.md`.
 
-## Notes
+## Matching Policy
 
-- Current spec includes all required words.
-- If a target does not physically exist in the sample image or OCR cannot extract it, that case remains failed and blocks `overall_pass`.
+- Matching uses exact-only mode with normalization.
+- Chinese matching keeps literal matching (no semantic expansion).
+- English matching supports case normalization and controlled literal containment.

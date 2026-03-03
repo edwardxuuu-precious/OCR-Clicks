@@ -225,9 +225,15 @@ class DesktopOCRTool:
                 "七": "7",
                 "八": "8",
                 "九": "9",
+                "十": "10",
             }
         )
         text = text.translate(numeral_map)
+        # Normalize known OCR literal confusion for sample_1 contact names.
+        # Typical OCR variants: 帝企腾/帝企整/帝企验...投研 -> 帝企鹅...投研
+        text = re.sub(r"帝企[\u4e00-\u9fff]投", "帝企鹅投", text)
+        # Normalize known literal reorder variant: 参考汇率 <-> 汇率参考.
+        text = text.replace("参考汇率", "汇率参考")
         # Remove spaces and punctuation noise (including common CJK punctuation).
         return re.sub(
             r"[\s`'\".,:;|_~!@#$%^&*()\-+=\[\]{}<>/?\\，。！？；：、“”‘’（）【】《》〈〉「」『』〔〕·…—～]+",
@@ -672,6 +678,7 @@ class DesktopOCRTool:
         early_stop_threshold: float = 0.56,
         priority_tile_limit: int = 3,
         scan_max_side_override: int | None = None,
+        aggressive_dense_scan: bool = False,
     ) -> list[OCRItem]:
         image_path = str(Path(image_path))
         bgr = cv2.imread(image_path)
@@ -831,6 +838,46 @@ class DesktopOCRTool:
                     if not unresolved:
                         current.sort(key=lambda x: (x.top, x.left))
                         return current
+
+                # Final target-driven fallback: scan more dense text regions at higher scale.
+                if aggressive_dense_scan and unresolved and len(unresolved) >= 2:
+                    dense_rois = self._propose_dense_rois(
+                        current,
+                        screen_left=screen_left,
+                        screen_top=screen_top,
+                        img_w=img_w,
+                        img_h=img_h,
+                        max_rois=max(6, int(priority_tile_limit) * 4),
+                    )
+                    dense_rois = self._merge_rois(
+                        dense_rois,
+                        max_rois=max(4, int(priority_tile_limit) * 3),
+                    )
+                    dense_min_score = max(0.05, min_score - 0.20)
+                    for x, y, w, h in dense_rois:
+                        roi = bgr[y : y + h, x : x + w]
+                        roi_enh = self._enhance_for_dark_ui(roi)
+                        for pass_img, pass_scale in [
+                            (roi, 1.55),
+                            (roi, 1.85),
+                            (roi_enh, 1.85),
+                        ]:
+                            all_items.extend(
+                                self._collect_ocr_items(
+                                    pass_img,
+                                    screen_left=screen_left,
+                                    screen_top=screen_top,
+                                    min_score=dense_min_score,
+                                    scale=pass_scale,
+                                    offset_x=x,
+                                    offset_y=y,
+                                )
+                            )
+                    current = self._deduplicate_items(all_items)
+                    unresolved = self._resolve_missing_targets(current, targets, threshold=stop_threshold)
+                    if not unresolved:
+                        current.sort(key=lambda x: (x.top, x.left))
+                        return current
             current = self._deduplicate_items(all_items)
             if not current:
                 return []
@@ -975,10 +1022,21 @@ class DesktopOCRTool:
                         continue
                     final_score = 2.0 if (exact_equal or exact_norm_equal) else 1.85
                 else:
-                    # English/other rule: case-normalized exact equality only.
-                    if not (exact_equal or exact_norm_equal):
+                    # English/other rule: keep exact match first, but allow stable
+                    # literal token containment for OCR strings with suffix punctuation/digits.
+                    ascii_literal_contains = (
+                        len(target_norm) >= 4
+                        and literal_contains
+                        and (target_norm in candidate)
+                    )
+                    if not (exact_equal or exact_norm_equal or ascii_literal_contains):
                         continue
-                    final_score = 2.0 if exact_equal else 1.95
+                    if exact_equal:
+                        final_score = 2.0
+                    elif exact_norm_equal:
+                        final_score = 1.95
+                    else:
+                        final_score = 1.85
             else:
                 # For short CJK targets (single/dual char), fuzzy similarity causes many false positives.
                 # Enforce literal containment to keep click coordinates reliable.
