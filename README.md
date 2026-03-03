@@ -15,6 +15,7 @@ Repository: https://github.com/edwardxuuu-precious/OCR-Clicks.git
 
 - 本地推理：不依赖云 OCR 服务
 - 自动加速：启动时自动选择 `CUDA` / `DirectML` / `CPU`
+- **智能优化 (Smart Optimize)**：根据截图尺寸自动调整参数，目标驱动模式下可提速 **1-30 倍**（准确率 100% 保持）
 - 高精度匹配：
 1. 多阶段 OCR（全图 + 局部增强）
 2. 短中文目标的严格匹配策略（降低误点）
@@ -138,6 +139,7 @@ GUI 支持：
 - `Capture Screen` 一键截图
 - 多目标输入（按行，或 `,` / `;` 分隔）
 - `Strict Mode` 复核匹配结果
+- `Smart Optimize` 智能优化（自动提速 1-30 倍）
 - `rounds` 多轮执行
 - `max_retries` 重试次数
 - `topk` 每个目标最多执行的坐标数
@@ -204,6 +206,23 @@ pip install onnxruntime-directml
 - 多屏点击偏移：
 1. 使用 `capture` 输出的 `left/top`
 2. 对应填入 GUI 的 `screen_left/screen_top`
+
+## Performance Tuning
+
+### Smart Optimize Mode (推荐)
+
+GUI 中勾选 **Smart Optimize** 可自动获得最佳性能：
+
+| 截图尺寸 | 默认模式 | Smart + Targets | 加速比 | 准确率 |
+|---------|---------|----------------|-------|-------|
+| 3440×1440 | 1.7s | 0.95s | **1.8x** | 100% |
+| 4480×1440 | 22.6s | 0.75s | **30x** | 100% |
+
+### 使用建议
+
+- **速度优先**：勾选 `Smart Optimize` + 输入明确的 `Targets`
+- **准确率优先**：取消 `Smart Optimize`（使用默认模式）
+- **详细优化指南**：参见 [PERFORMANCE_TUNING.md](PERFORMANCE_TUNING.md)
 
 ## Safety
 

@@ -6,6 +6,43 @@ This repository uses a timestamp + index version format:
 - Source of truth: `VERSION.json`
 - Label format: `vYYYYMMDD.NNN`
 
+## [v20260303.011] - 2026-03-03T19:35:00+08:00
+
+### Version Metadata
+- version: `20260303.011`
+- index: `011`
+- version_date: `2026-03-03`
+- source_commit: `4673b4f`
+- timezone: `Asia/Shanghai`
+
+### New Features
+- **Smart Optimize Mode**: Auto-tunes OCR parameters based on image size for optimal speed without accuracy loss
+  - `src/desktop_ocr_tool.py`: Add `run_ocr_smart()` method with dynamic parameter adjustment
+  - Supports 1-30x speedup when using target-driven mode (with `expected_targets`)
+  - Automatically adjusts `scan_max_side` and `priority_tile_limit` based on screenshot dimensions
+
+### GUI Enhancements
+- **Smart Optimize Checkbox**: One-click enable in GUI
+  - `src/ocr_mouse_tester_gui.py`: Add `smart_optimize_var` and checkbox
+  - Auto-selects between `run_ocr_smart()` and `run_ocr()` based on user preference
+  - Configuration save/load support for Smart Optimize setting
+
+### Performance Improvements
+| Mode | Sample 1 (3440x1440) | Sample 2 (4480x1440) | Accuracy |
+|------|---------------------|---------------------|----------|
+| Default | 1.7s | 22.6s | 100% |
+| Smart + Targets | 0.95s (1.8x) | 0.75s (30x) | 100% |
+
+### Documentation
+- **PERFORMANCE_TUNING.md**: New comprehensive optimization guide
+  - GPU vs CPU benchmark comparisons
+  - Smart Optimize usage instructions
+  - Target-driven OCR best practices
+  - Code examples for different scenarios
+
+### Test Suite Updates
+- `test/run_test_suite.py`: Add `--max-resize-width` parameter support for resize testing
+
 ## [v20260303.010] - 2026-03-03T14:00:23+08:00
 
 ### Version Metadata

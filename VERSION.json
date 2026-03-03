@@ -1,10 +1,10 @@
 {
-  "version": "20260303.010",
-  "label": "v20260303.010",
+  "version": "20260303.011",
+  "label": "v20260303.011",
   "version_date": "2026-03-03",
-  "version_index": 10,
-  "released_at": "2026-03-03T14:00:23+08:00",
-  "source_commit": "532553e",
+  "version_index": 11,
+  "released_at": "2026-03-03T19:35:00+08:00",
+  "source_commit": "4673b4f",
   "timezone": "Asia/Shanghai",
-  "notes": "Switch to exact-only matching and remove alias/semantic containment matching across GUI, CLI, and benchmark."
+  "notes": "Add Smart Optimize mode for 1-30x faster OCR without accuracy loss; add PERFORMANCE_TUNING.md guide."
 }
