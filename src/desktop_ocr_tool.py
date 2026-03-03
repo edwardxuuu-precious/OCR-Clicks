@@ -211,8 +211,29 @@ class DesktopOCRTool:
     @staticmethod
     def _normalize_match_text(text: str) -> str:
         text = text.lower().strip()
-        # Remove spaces and lightweight punctuation noise before fuzzy matching.
-        return re.sub(r"[\s`'\".,:;|_~!@#$%^&*()\-+=\[\]{}<>/?\\]+", "", text)
+        numeral_map = str.maketrans(
+            {
+                "零": "0",
+                "〇": "0",
+                "一": "1",
+                "二": "2",
+                "两": "2",
+                "三": "3",
+                "四": "4",
+                "五": "5",
+                "六": "6",
+                "七": "7",
+                "八": "8",
+                "九": "9",
+            }
+        )
+        text = text.translate(numeral_map)
+        # Remove spaces and punctuation noise (including common CJK punctuation).
+        return re.sub(
+            r"[\s`'\".,:;|_~!@#$%^&*()\-+=\[\]{}<>/?\\，。！？；：、“”‘’（）【】《》〈〉「」『』〔〕·…—～]+",
+            "",
+            text,
+        )
 
     def set_center_bias_map(self, bias_map: dict[str, list[float] | tuple[float, float]]) -> None:
         normalized: dict[str, tuple[int, int]] = {}
@@ -650,6 +671,7 @@ class DesktopOCRTool:
         expected_targets: Iterable[str] | None = None,
         early_stop_threshold: float = 0.56,
         priority_tile_limit: int = 3,
+        scan_max_side_override: int | None = None,
     ) -> list[OCRItem]:
         image_path = str(Path(image_path))
         bgr = cv2.imread(image_path)
@@ -663,7 +685,10 @@ class DesktopOCRTool:
         # Downscale very large screenshots for fast full-frame scan.
         full_h, full_w = bgr.shape[:2]
         max_side = max(full_w, full_h)
-        scan_max_side = 2048 if targets else 2560
+        if scan_max_side_override is not None:
+            scan_max_side = max(960, int(scan_max_side_override))
+        else:
+            scan_max_side = 2048 if targets else 2560
         full_scan_scale = 1.0
         if max_side > scan_max_side:
             full_scan_scale = float(scan_max_side) / max_side
@@ -747,6 +772,35 @@ class DesktopOCRTool:
 
             unresolved = self._resolve_missing_targets(current, targets, threshold=stop_threshold)
             if unresolved:
+                unresolved_cjk = [
+                    t
+                    for t in unresolved
+                    if any("\u4e00" <= ch <= "\u9fff" for ch in self._normalize_match_text(t))
+                ]
+                if unresolved_cjk:
+                    cjk_min_score = max(0.08, min_score - 0.18)
+                    full_enhanced = self._enhance_for_dark_ui(bgr)
+                    for pass_img, pass_scale in [
+                        (bgr, 1.12),
+                        (full_enhanced, 1.30),
+                    ]:
+                        all_items.extend(
+                            self._collect_ocr_items(
+                                pass_img,
+                                screen_left=screen_left,
+                                screen_top=screen_top,
+                                min_score=cjk_min_score,
+                                scale=pass_scale,
+                                offset_x=0,
+                                offset_y=0,
+                            )
+                        )
+                    current = self._deduplicate_items(all_items)
+                    unresolved = self._resolve_missing_targets(current, targets, threshold=stop_threshold)
+                    if not unresolved:
+                        current.sort(key=lambda x: (x.top, x.left))
+                        return current
+
                 unresolved_ascii = [
                     t
                     for t in unresolved
@@ -882,6 +936,7 @@ class DesktopOCRTool:
         else:
             target = target_text
         target_norm = self._normalize_match_text(target)
+        has_cjk_target = any("\u4e00" <= ch <= "\u9fff" for ch in target_norm)
         target_cmp = target_norm or target
         len_target = max(1, len(target_cmp))
         target_first = target_cmp[:1]
@@ -913,9 +968,17 @@ class DesktopOCRTool:
 
             if exact_only:
                 literal_contains = bool(target_norm) and (target_norm in candidate_norm)
-                if not (exact_equal or exact_norm_equal or literal_contains):
-                    continue
-                final_score = 2.0 if (exact_equal or exact_norm_equal) else 1.85
+                if has_cjk_target:
+                    # Chinese rule: strict literal matching (no fuzzy semantics).
+                    # Accept exact-equal or literal substring containment.
+                    if not literal_contains:
+                        continue
+                    final_score = 2.0 if (exact_equal or exact_norm_equal) else 1.85
+                else:
+                    # English/other rule: case-normalized exact equality only.
+                    if not (exact_equal or exact_norm_equal):
+                        continue
+                    final_score = 2.0 if exact_equal else 1.95
             else:
                 # For short CJK targets (single/dual char), fuzzy similarity causes many false positives.
                 # Enforce literal containment to keep click coordinates reliable.

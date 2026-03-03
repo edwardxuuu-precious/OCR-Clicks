@@ -1,0 +1,94 @@
+{
+  "name": "sample_1_exact_targets",
+  "image_path": "test/test_sample_img/sample_1.png",
+  "mode_time_budget_sec": {
+    "gpu": 4.0,
+    "cpu": 12.0
+  },
+  "ocr_config": {
+    "screen_left": 0,
+    "screen_top": 0,
+    "min_score": 0.35,
+    "threshold": 0.62,
+    "topk": 30,
+    "use_target_driven_ocr": true,
+    "scan_max_side": 2048
+  },
+  "cases": [
+    {
+      "id": "sample1_didibaby",
+      "query": "笛笛宝宝",
+      "expected_center": [
+        1869,
+        163
+      ],
+      "tolerance_px": 45
+    },
+    {
+      "id": "sample1_zaima",
+      "query": "在吗",
+      "expected_center": [
+        1852,
+        1134
+      ],
+      "tolerance_px": 60
+    },
+    {
+      "id": "sample1_1921",
+      "query": "19:21",
+      "expected_center": [
+        1999,
+        844
+      ],
+      "tolerance_px": 45
+    },
+    {
+      "id": "sample1_gongzhonghao",
+      "query": "公众号",
+      "expected_center": [
+        2064,
+        41
+      ],
+      "tolerance_px": 45
+    },
+    {
+      "id": "sample1_changkan",
+      "query": "常看的号",
+      "expected_center": [
+        2447,
+        95
+      ],
+      "tolerance_px": 45
+    },
+    {
+      "id": "sample1_tiandaojiuyuan",
+      "query": "天道久远",
+      "expected_center": [
+        2493,
+        966
+      ],
+      "tolerance_px": 70
+    },
+    {
+      "id": "sample1_yixiaoshiqian",
+      "query": "一小时前",
+      "expected_center": [
+        2772,
+        679
+      ],
+      "tolerance_px": 70
+    },
+    {
+      "id": "sample1_yuxiashitiao",
+      "query": "余下十条",
+      "expected_center": null,
+      "tolerance_px": 70
+    },
+    {
+      "id": "sample1_jinricankaohuilv",
+      "query": "今日参考汇率",
+      "expected_center": null,
+      "tolerance_px": 90
+    }
+  ]
+}
