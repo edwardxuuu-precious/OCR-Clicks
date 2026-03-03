@@ -1,5 +1,5 @@
 ﻿{
-  "image_path": "test/test_capture.png",
+  "image_path": "test/test_sample_img/sample_1.png",
   "cases": [
     {
       "id": "title_en",
@@ -140,6 +140,28 @@
       "expected_texts": ["快讯"],
       "expected_center": [2480, 1100],
       "tolerance_px": 50
+    },
+    {
+      "id": "sample2_search_placeholder_en",
+      "lang": "en",
+      "image_path": "test/test_sample_img/sample_2.png",
+      "target": "Search",
+      "query_texts": ["Search"],
+      "expected_text": "Search",
+      "expected_texts": ["Search", "Sesrch", "Searth"],
+      "expected_center": [2881, 148],
+      "tolerance_px": 120
+    },
+    {
+      "id": "sample2_free_keyword_zh",
+      "lang": "zh",
+      "image_path": "test/test_sample_img/sample_2.png",
+      "target": "免费",
+      "query_texts": ["免费"],
+      "expected_text": "免费试看",
+      "expected_texts": ["免费试看", "免费"],
+      "expected_center": [2490, 1305],
+      "tolerance_px": 90
     }
   ]
 }

@@ -20,6 +20,13 @@ if str(SRC_DIR) not in sys.path:
     sys.path.insert(0, str(SRC_DIR))
 
 from desktop_ocr_tool import DesktopOCRTool  # noqa: E402
+from project_version import (  # noqa: E402
+    PROJECT_RELEASED_AT,
+    PROJECT_SOURCE_COMMIT,
+    PROJECT_VERSION,
+    PROJECT_VERSION_INDEX,
+    PROJECT_VERSION_LABEL,
+)
 
 
 def _normalize_text(text: str) -> str:
@@ -94,6 +101,27 @@ def _case_language(case: dict[str, Any]) -> str:
         return lang
     probe_text = " ".join(_case_query_texts(case) + _case_expected_texts(case))
     return "zh" if _contains_cjk(probe_text) else "en"
+
+
+def _case_image_path(case: dict[str, Any], *, default_image_path: Path) -> Path:
+    path_text = str(case.get("image_path", "")).strip()
+    if not path_text:
+        return default_image_path
+    return _resolve_path(path_text)
+
+
+def _group_cases_by_image(
+    cases: list[dict[str, Any]],
+    *,
+    default_image_path: Path,
+) -> dict[Path, list[dict[str, Any]]]:
+    grouped: dict[Path, list[dict[str, Any]]] = {}
+    for case in cases:
+        case_copy = dict(case)
+        resolved = _case_image_path(case_copy, default_image_path=default_image_path)
+        case_copy["_resolved_image_path"] = str(resolved)
+        grouped.setdefault(resolved, []).append(case_copy)
+    return grouped
 
 
 def _is_text_match(match_text: str, expected_texts: list[str]) -> tuple[bool, str]:
@@ -177,6 +205,7 @@ def _evaluate_case(
     if not match:
         return {
             "id": case_id,
+            "image_path": str(case.get("_resolved_image_path", case.get("image_path", ""))),
             "target": primary_target,
             "query_texts": query_texts,
             "expected_texts": expected_texts,
@@ -209,6 +238,7 @@ def _evaluate_case(
 
     return {
         "id": case_id,
+        "image_path": str(case.get("_resolved_image_path", case.get("image_path", ""))),
         "target": primary_target,
         "query_texts": query_texts,
         "expected_texts": expected_texts,
@@ -227,7 +257,7 @@ def _evaluate_case(
     }
 
 
-def _run_once(
+def _run_once_single_image(
     tool: DesktopOCRTool,
     *,
     image_path: Path,
@@ -298,6 +328,7 @@ def _run_once(
     en_text_ok_count = sum(1 for r in case_results if r.get("lang") == "en" and r["text_ok"])
 
     return {
+        "image_path": str(image_path),
         "ocr_sec": ocr_sec,
         "eval_sec": eval_sec,
         "num_cases": len(case_results),
@@ -310,6 +341,82 @@ def _run_once(
         "zh_text_ok_count": zh_text_ok_count,
         "en_case_count": en_case_count,
         "en_text_ok_count": en_text_ok_count,
+        "case_results": case_results,
+    }
+
+
+def _run_once(
+    tool: DesktopOCRTool,
+    *,
+    cases_by_image: dict[Path, list[dict[str, Any]]],
+    screen_left: int,
+    screen_top: int,
+    min_score: float,
+    threshold: float,
+    topk: int,
+    case_sensitive: bool,
+    default_tolerance: float,
+) -> dict[str, Any]:
+    per_image_runs: list[dict[str, Any]] = []
+    for image_path in sorted(cases_by_image.keys(), key=lambda p: str(p).lower()):
+        per_image_runs.append(
+            _run_once_single_image(
+                tool,
+                image_path=image_path,
+                screen_left=screen_left,
+                screen_top=screen_top,
+                min_score=min_score,
+                threshold=threshold,
+                topk=topk,
+                case_sensitive=case_sensitive,
+                default_tolerance=default_tolerance,
+                cases=cases_by_image[image_path],
+            )
+        )
+
+    case_results: list[dict[str, Any]] = []
+    ocr_sec = 0.0
+    eval_sec = 0.0
+    found_count = 0
+    text_ok_count = 0
+    position_eval_count = 0
+    position_ok_count = 0
+    zh_case_count = 0
+    zh_text_ok_count = 0
+    en_case_count = 0
+    en_text_ok_count = 0
+    distance_values: list[float] = []
+    for run in per_image_runs:
+        case_results.extend(run.get("case_results", []))
+        ocr_sec += float(run.get("ocr_sec", 0.0))
+        eval_sec += float(run.get("eval_sec", 0.0))
+        found_count += int(run.get("found_count", 0))
+        text_ok_count += int(run.get("text_ok_count", 0))
+        position_eval_count += int(run.get("position_eval_count", 0))
+        position_ok_count += int(run.get("position_ok_count", 0))
+        zh_case_count += int(run.get("zh_case_count", 0))
+        zh_text_ok_count += int(run.get("zh_text_ok_count", 0))
+        en_case_count += int(run.get("en_case_count", 0))
+        en_text_ok_count += int(run.get("en_text_ok_count", 0))
+        mean_distance = run.get("mean_distance_px")
+        if mean_distance is not None:
+            distance_values.append(float(mean_distance))
+
+    return {
+        "ocr_sec": ocr_sec,
+        "eval_sec": eval_sec,
+        "num_cases": len(case_results),
+        "found_count": found_count,
+        "text_ok_count": text_ok_count,
+        "position_eval_count": position_eval_count,
+        "position_ok_count": position_ok_count,
+        "mean_distance_px": statistics.mean(distance_values) if distance_values else None,
+        "zh_case_count": zh_case_count,
+        "zh_text_ok_count": zh_text_ok_count,
+        "en_case_count": en_case_count,
+        "en_text_ok_count": en_text_ok_count,
+        "num_images": len(per_image_runs),
+        "per_image_runs": per_image_runs,
         "case_results": case_results,
     }
 
@@ -362,9 +469,96 @@ def _aggregate_runs(runs: list[dict[str, Any]]) -> dict[str, Any]:
     }
 
 
+def _sample_name_from_image_path(image_path: str) -> str:
+    p = Path(image_path)
+    return p.stem or image_path
+
+
+def _build_per_image_aggregates(runs: list[dict[str, Any]]) -> dict[str, dict[str, Any]]:
+    buckets: dict[str, list[dict[str, Any]]] = {}
+    for run in runs:
+        per_image_runs = run.get("per_image_runs", [])
+        if not isinstance(per_image_runs, list):
+            continue
+        for entry in per_image_runs:
+            image_path = str(entry.get("image_path", "")).strip()
+            if not image_path:
+                continue
+            buckets.setdefault(image_path, []).append(entry)
+
+    out: dict[str, dict[str, Any]] = {}
+    for image_path, entries in buckets.items():
+        agg = _aggregate_runs(entries)
+        agg["sample"] = _sample_name_from_image_path(image_path)
+        out[image_path] = agg
+    return out
+
+
 def _write_raw_runs_csv(path: Path, runs: list[dict[str, Any]], runtime_info: dict[str, Any]) -> None:
     fields = [
         "run_index",
+        "sample",
+        "image_path",
+        "ocr_sec",
+        "eval_sec",
+        "num_cases",
+        "found_rate",
+        "text_accuracy",
+        "text_accuracy_zh",
+        "text_accuracy_en",
+        "position_accuracy",
+        "mean_position_error_px",
+        "runtime_mode",
+        "use_gpu_requested",
+        "gpu_enabled",
+    ]
+    with path.open("w", encoding="utf-8", newline="") as f:
+        writer = csv.DictWriter(f, fieldnames=fields)
+        writer.writeheader()
+        for idx, run in enumerate(runs, start=1):
+            per_image_runs = run.get("per_image_runs", [])
+            if not isinstance(per_image_runs, list):
+                continue
+            for image_entry in per_image_runs:
+                image_path = str(image_entry.get("image_path", ""))
+                writer.writerow(
+                    {
+                        "run_index": idx,
+                        "sample": _sample_name_from_image_path(image_path),
+                        "image_path": image_path,
+                        "ocr_sec": f"{float(image_entry['ocr_sec']):.6f}",
+                        "eval_sec": f"{float(image_entry['eval_sec']):.6f}",
+                        "num_cases": int(image_entry["num_cases"]),
+                        "found_rate": f"{_safe_rate(image_entry['found_count'], image_entry['num_cases']):.6f}",
+                        "text_accuracy": f"{_safe_rate(image_entry['text_ok_count'], image_entry['num_cases']):.6f}",
+                        "text_accuracy_zh": (
+                            f"{_safe_rate(image_entry.get('zh_text_ok_count', 0), image_entry.get('zh_case_count', 0)):.6f}"
+                        ),
+                        "text_accuracy_en": (
+                            f"{_safe_rate(image_entry.get('en_text_ok_count', 0), image_entry.get('en_case_count', 0)):.6f}"
+                        ),
+                        "position_accuracy": (
+                            f"{_safe_rate(image_entry['position_ok_count'], image_entry['position_eval_count']):.6f}"
+                            if image_entry["position_eval_count"] > 0
+                            else ""
+                        ),
+                        "mean_position_error_px": (
+                            f"{float(image_entry['mean_distance_px']):.6f}"
+                            if image_entry["mean_distance_px"] is not None
+                            else ""
+                        ),
+                        "runtime_mode": runtime_info.get("acceleration_mode", ""),
+                        "use_gpu_requested": runtime_info.get("use_gpu_requested", False),
+                        "gpu_enabled": runtime_info.get("gpu_enabled", False),
+                    }
+                )
+
+
+def _write_raw_runs_overall_csv(path: Path, runs: list[dict[str, Any]], runtime_info: dict[str, Any]) -> None:
+    fields = [
+        "run_index",
+        "num_images",
+        "num_cases",
         "ocr_sec",
         "eval_sec",
         "found_rate",
@@ -384,6 +578,8 @@ def _write_raw_runs_csv(path: Path, runs: list[dict[str, Any]], runtime_info: di
             writer.writerow(
                 {
                     "run_index": idx,
+                    "num_images": int(run.get("num_images", 0)),
+                    "num_cases": int(run["num_cases"]),
                     "ocr_sec": f"{float(run['ocr_sec']):.6f}",
                     "eval_sec": f"{float(run['eval_sec']):.6f}",
                     "found_rate": f"{_safe_rate(run['found_count'], run['num_cases']):.6f}",
@@ -403,6 +599,61 @@ def _write_raw_runs_csv(path: Path, runs: list[dict[str, Any]], runtime_info: di
                     "gpu_enabled": runtime_info.get("gpu_enabled", False),
                 }
             )
+
+
+def _write_case_results_csv(path: Path, runs: list[dict[str, Any]]) -> None:
+    fields = [
+        "run_index",
+        "sample",
+        "image_path",
+        "case_id",
+        "lang",
+        "target",
+        "found",
+        "text_ok",
+        "position_eval",
+        "position_ok",
+        "distance_px",
+        "match_text",
+        "expected_text_hit",
+        "match_score",
+        "ocr_score",
+        "center_x",
+        "center_y",
+    ]
+    with path.open("w", encoding="utf-8", newline="") as f:
+        writer = csv.DictWriter(f, fieldnames=fields)
+        writer.writeheader()
+        for idx, run in enumerate(runs, start=1):
+            case_results = run.get("case_results", [])
+            if not isinstance(case_results, list):
+                continue
+            for case in case_results:
+                image_path = str(case.get("image_path", ""))
+                center = case.get("center")
+                cx = center[0] if isinstance(center, list) and len(center) == 2 else ""
+                cy = center[1] if isinstance(center, list) and len(center) == 2 else ""
+                writer.writerow(
+                    {
+                        "run_index": idx,
+                        "sample": _sample_name_from_image_path(image_path),
+                        "image_path": image_path,
+                        "case_id": case.get("id", ""),
+                        "lang": case.get("lang", ""),
+                        "target": case.get("target", ""),
+                        "found": bool(case.get("found", False)),
+                        "text_ok": bool(case.get("text_ok", False)),
+                        "position_eval": bool(case.get("position_eval", False)),
+                        "position_ok": bool(case.get("position_ok", False)),
+                        "distance_px": "" if case.get("distance_px") is None else f"{float(case['distance_px']):.6f}",
+                        "match_text": case.get("match_text", ""),
+                        "expected_text_hit": case.get("expected_text_hit", ""),
+                        "match_score": f"{float(case.get('match_score', 0.0)):.6f}",
+                        "ocr_score": f"{float(case.get('ocr_score', 0.0)):.6f}",
+                        "center_x": cx,
+                        "center_y": cy,
+                    }
+                )
 
 
 def _extract_aggregate_from_result(
@@ -499,6 +750,7 @@ def _build_summary_markdown(results: dict[str, Any]) -> str:
     benchmark = results["benchmark"]
     runtime = benchmark["runtime_info"]
     aggregate = benchmark["aggregate"]
+    per_image_aggregates = benchmark.get("per_image_aggregates", {})
     comparison = results.get("comparison_vs_previous")
     baseline = results.get("baseline_reference")
     skip_reason = str(results.get("comparison_skip_reason", "")).strip()
@@ -506,8 +758,18 @@ def _build_summary_markdown(results: dict[str, Any]) -> str:
     lines: list[str] = []
     lines.append("# OCR Iteration Benchmark Summary")
     lines.append("")
+    lines.append(f"- project_version: {results.get('project_version_label', results.get('project_version', 'v0.0.0'))}")
+    lines.append(f"- project_version_index: {results.get('project_version_index', 0)}")
+    lines.append(f"- project_released_at: {results.get('project_released_at', '')}")
+    lines.append(f"- project_source_commit: {results.get('project_source_commit', '')}")
     lines.append(f"- generated_at_utc: {results['generated_at_utc']}")
-    lines.append(f"- image: {results['image_path']}")
+    image_paths = results.get("image_paths", [])
+    if isinstance(image_paths, list) and image_paths:
+        lines.append(f"- images: {len(image_paths)}")
+        for p in image_paths:
+            lines.append(f"  - {p}")
+    else:
+        lines.append(f"- image: {results['image_path']}")
     lines.append(
         f"- warmup_runs: {results['warmup_runs']}"
         f" (requested={results.get('warmup_runs_requested', results['warmup_runs'])})"
@@ -545,6 +807,21 @@ def _build_summary_markdown(results: dict[str, Any]) -> str:
     mean_pos = aggregate["mean_position_error_px"]
     lines.append(f"- mean_position_error_px: {mean_pos:.4f}" if mean_pos is not None else "- mean_position_error_px: N/A")
     lines.append("")
+    lines.append("## Per-Sample Breakdown")
+    lines.append("")
+    if isinstance(per_image_aggregates, dict) and per_image_aggregates:
+        for image_path in sorted(per_image_aggregates.keys()):
+            sample_agg = per_image_aggregates[image_path]
+            sample_name = str(sample_agg.get("sample", _sample_name_from_image_path(image_path)))
+            lines.append(f"- sample: {sample_name}")
+            lines.append(f"  - image_path: {image_path}")
+            lines.append(f"  - mean_ocr_sec: {float(sample_agg.get('mean_ocr_sec', 0.0)):.4f}")
+            lines.append(f"  - text_accuracy: {float(sample_agg.get('text_accuracy', 0.0)):.4f}")
+            lines.append(f"  - position_accuracy: {float(sample_agg.get('position_accuracy', 0.0)):.4f}")
+            lines.append(f"  - total_cases: {int(sample_agg.get('total_cases', 0))}")
+    else:
+        lines.append("- per-sample aggregate: N/A")
+    lines.append("")
     lines.append("## Iteration Comparison")
     lines.append("")
     if comparison and baseline:
@@ -564,6 +841,14 @@ def _build_summary_markdown(results: dict[str, Any]) -> str:
             lines.append(f"- comparison: skipped ({skip_reason})")
         else:
             lines.append("- comparison: skipped (no previous comparable result found)")
+    lines.append("")
+    lines.append("## Output Files")
+    lines.append("")
+    lines.append("- raw_runs.csv (per-sample per-run metrics)")
+    lines.append("- raw_runs_overall.csv (overall per-run metrics)")
+    lines.append("- case_results.csv (per-case per-run records)")
+    lines.append("- results.json (full structured payload)")
+    lines.append("- summary.md (human-readable summary)")
     lines.append("")
     return "\n".join(lines)
 
@@ -594,10 +879,23 @@ def main() -> None:
 
     gt_path = _resolve_path(str(cfg["ground_truth_path"]))
     gt = _load_json(gt_path)
+    gt_image_path_text = str(gt.get("image_path", "")).strip()
+    gt_default_image_path = _resolve_path(gt_image_path_text) if gt_image_path_text else image_path
+    if gt_image_path_text and gt_default_image_path != image_path:
+        raise ValueError(
+            "Benchmark default image mismatch between config and ground truth: "
+            f"config.image_path={image_path}, ground_truth.image_path={gt_default_image_path}. "
+            "Please keep them identical."
+        )
     ground_truth_signature = _file_sha1(gt_path)
     cases: list[dict[str, Any]] = list(gt.get("cases", []))
     if not cases:
         raise ValueError(f"No benchmark cases found in ground truth file: {gt_path}")
+    cases_by_image = _group_cases_by_image(cases, default_image_path=gt_default_image_path)
+    for case_image in cases_by_image:
+        if not case_image.exists():
+            raise FileNotFoundError(f"Case image not found: {case_image}")
+    image_paths = [str(p) for p in sorted(cases_by_image.keys(), key=lambda x: str(x).lower())]
 
     warmup_runs = int(cfg.get("warmup_runs", 1))
     measure_runs = int(cfg.get("measure_runs", 5))
@@ -632,7 +930,7 @@ def main() -> None:
             _ = warm_tool.get_runtime_info()
             _run_once(
                 warm_tool,
-                image_path=image_path,
+                cases_by_image=cases_by_image,
                 screen_left=screen_left,
                 screen_top=screen_top,
                 min_score=min_score,
@@ -640,7 +938,6 @@ def main() -> None:
                 topk=topk,
                 case_sensitive=case_sensitive,
                 default_tolerance=position_tolerance_px,
-                cases=cases,
             )
     else:
         tool = DesktopOCRTool(use_gpu=use_gpu, center_bias_map=center_bias_map)
@@ -648,7 +945,7 @@ def main() -> None:
         for _ in range(effective_warmup_runs):
             _run_once(
                 tool,
-                image_path=image_path,
+                cases_by_image=cases_by_image,
                 screen_left=screen_left,
                 screen_top=screen_top,
                 min_score=min_score,
@@ -656,7 +953,6 @@ def main() -> None:
                 topk=topk,
                 case_sensitive=case_sensitive,
                 default_tolerance=position_tolerance_px,
-                cases=cases,
             )
 
     runs: list[dict[str, Any]] = []
@@ -668,7 +964,7 @@ def main() -> None:
             runs.append(
                 _run_once(
                     run_tool,
-                    image_path=image_path,
+                    cases_by_image=cases_by_image,
                     screen_left=screen_left,
                     screen_top=screen_top,
                     min_score=min_score,
@@ -676,14 +972,13 @@ def main() -> None:
                     topk=topk,
                     case_sensitive=case_sensitive,
                     default_tolerance=position_tolerance_px,
-                    cases=cases,
                 )
             )
         else:
             runs.append(
                 _run_once(
                     tool,
-                    image_path=image_path,
+                    cases_by_image=cases_by_image,
                     screen_left=screen_left,
                     screen_top=screen_top,
                     min_score=min_score,
@@ -691,12 +986,12 @@ def main() -> None:
                     topk=topk,
                     case_sensitive=case_sensitive,
                     default_tolerance=position_tolerance_px,
-                    cases=cases,
                 )
             )
     if not runtime_info:
         runtime_info = DesktopOCRTool(use_gpu=use_gpu, center_bias_map=center_bias_map).get_runtime_info()
     aggregate = _aggregate_runs(runs)
+    per_image_aggregates = _build_per_image_aggregates(runs)
 
     baseline_reference: dict[str, Any] | None = None
     comparison_vs_previous: dict[str, Any] | None = None
@@ -733,9 +1028,15 @@ def main() -> None:
                     }
 
     payload = {
+        "project_version": PROJECT_VERSION,
+        "project_version_label": PROJECT_VERSION_LABEL,
+        "project_version_index": PROJECT_VERSION_INDEX,
+        "project_released_at": PROJECT_RELEASED_AT,
+        "project_source_commit": PROJECT_SOURCE_COMMIT,
         "generated_at_utc": datetime.now(timezone.utc).isoformat(),
         "config_path": str(cfg_path),
         "image_path": str(image_path),
+        "image_paths": image_paths,
         "ground_truth_path": str(gt_path),
         "ground_truth_signature": ground_truth_signature,
         "warmup_runs_requested": warmup_runs,
@@ -749,6 +1050,7 @@ def main() -> None:
             "runtime_info": runtime_info,
             "runs": runs,
             "aggregate": aggregate,
+            "per_image_aggregates": per_image_aggregates,
         },
         "baseline_reference": baseline_reference,
         "comparison_vs_previous": comparison_vs_previous,
@@ -761,6 +1063,8 @@ def main() -> None:
     )
     (out_dir / "results.json").write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
     _write_raw_runs_csv(out_dir / "raw_runs.csv", runs, runtime_info)
+    _write_raw_runs_overall_csv(out_dir / "raw_runs_overall.csv", runs, runtime_info)
+    _write_case_results_csv(out_dir / "case_results.csv", runs)
     (out_dir / "summary.md").write_text(_build_summary_markdown(payload), encoding="utf-8")
 
     print(f"Benchmark completed. Results stored at: {out_dir}")

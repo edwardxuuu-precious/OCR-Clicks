@@ -15,6 +15,7 @@ import cv2
 import mss
 import numpy as np
 from rapidocr_onnxruntime import RapidOCR
+from project_version import PROJECT_VERSION_LABEL
 
 
 @dataclass
@@ -374,6 +375,65 @@ class DesktopOCRTool:
                 kept.append(item)
         return kept
 
+    @staticmethod
+    def _rect_iou(
+        a: tuple[int, int, int, int],
+        b: tuple[int, int, int, int],
+    ) -> float:
+        ax1, ay1, ax2, ay2 = a
+        bx1, by1, bx2, by2 = b
+        x1 = max(ax1, bx1)
+        y1 = max(ay1, by1)
+        x2 = min(ax2, bx2)
+        y2 = min(ay2, by2)
+        iw = max(0, x2 - x1)
+        ih = max(0, y2 - y1)
+        inter = iw * ih
+        if inter == 0:
+            return 0.0
+        area_a = max(1, (ax2 - ax1) * (ay2 - ay1))
+        area_b = max(1, (bx2 - bx1) * (by2 - by1))
+        union = area_a + area_b - inter
+        return inter / max(1, union)
+
+    def _is_same_region_match(
+        self,
+        candidate: dict[str, Any],
+        kept: dict[str, Any],
+    ) -> bool:
+        cx, cy = int(candidate["center"][0]), int(candidate["center"][1])
+        kx, ky = int(kept["center"][0]), int(kept["center"][1])
+        if abs(cx - kx) <= 16 and abs(cy - ky) <= 16:
+            return True
+
+        c_rect = (
+            int(candidate["left"]),
+            int(candidate["top"]),
+            int(candidate["right"]),
+            int(candidate["bottom"]),
+        )
+        k_rect = (
+            int(kept["left"]),
+            int(kept["top"]),
+            int(kept["right"]),
+            int(kept["bottom"]),
+        )
+        iou = self._rect_iou(c_rect, k_rect)
+        if iou >= 0.58:
+            return True
+
+        c_text = self._normalize_match_text(str(candidate.get("match_text", "")))
+        k_text = self._normalize_match_text(str(kept.get("match_text", "")))
+        if not c_text or not k_text:
+            return False
+        text_nested = c_text in k_text or k_text in c_text
+        if not text_nested:
+            return False
+
+        y_close = abs(cy - ky) <= 28
+        same_line_overlap = min(c_rect[2], k_rect[2]) - max(c_rect[0], k_rect[0]) > 0
+        return y_close and same_line_overlap and iou >= 0.20
+
     def _resolve_missing_targets(
         self,
         items: list[OCRItem],
@@ -673,6 +733,39 @@ class DesktopOCRTool:
                 if not unresolved:
                     current.sort(key=lambda x: (x.top, x.left))
                     return current
+
+            unresolved = self._resolve_missing_targets(current, targets, threshold=stop_threshold)
+            if unresolved:
+                unresolved_ascii = [
+                    t
+                    for t in unresolved
+                    if len(self._normalize_match_text(t)) >= 4 and any(ch.isascii() and ch.isalpha() for ch in t)
+                ]
+                if unresolved_ascii:
+                    toolbar_h = min(img_h, max(120, int(img_h * 0.16)))
+                    toolbar = bgr[0:toolbar_h, 0:img_w]
+                    toolbar_enh = self._enhance_for_dark_ui(toolbar)
+                    toolbar_min_score = max(0.08, min_score - 0.20)
+                    for pass_img, pass_scale in [
+                        (toolbar, 1.45),
+                        (toolbar_enh, 1.68),
+                    ]:
+                        all_items.extend(
+                            self._collect_ocr_items(
+                                pass_img,
+                                screen_left=screen_left,
+                                screen_top=screen_top,
+                                min_score=toolbar_min_score,
+                                scale=pass_scale,
+                                offset_x=0,
+                                offset_y=0,
+                            )
+                        )
+                    current = self._deduplicate_items(all_items)
+                    unresolved = self._resolve_missing_targets(current, targets, threshold=stop_threshold)
+                    if not unresolved:
+                        current.sort(key=lambda x: (x.top, x.left))
+                        return current
             current = self._deduplicate_items(all_items)
             if not current:
                 return []
@@ -844,7 +937,14 @@ class DesktopOCRTool:
             )
 
         matches.sort(key=lambda x: (x["match_score"], x["ocr_score"]), reverse=True)
-        return matches[:topk]
+        selected: list[dict[str, Any]] = []
+        for match in matches:
+            if any(self._is_same_region_match(match, kept) for kept in selected):
+                continue
+            selected.append(match)
+            if len(selected) >= topk:
+                break
+        return selected
 
 
 def _to_json(data: Any) -> str:
@@ -858,6 +958,7 @@ def _to_json(data: Any) -> str:
 
 def _build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="Local OCR utility for desktop automation agents.")
+    parser.add_argument("--version", action="version", version=f"%(prog)s {PROJECT_VERSION_LABEL}")
     sub = parser.add_subparsers(dest="cmd", required=True)
 
     p_capture = sub.add_parser("capture", help="Capture full virtual desktop screenshot.")

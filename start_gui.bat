@@ -2,23 +2,13 @@
 setlocal
 cd /d "%~dp0"
 
-if not exist ".venv\Scripts\python.exe" (
-  echo [ERROR] Virtual environment not found: .venv
-  echo Please run:
-  echo   py -3.11 -m venv .venv
-  echo   .venv\Scripts\python.exe -m pip install -r requirements.txt
+where powershell >nul 2>nul
+if errorlevel 1 (
+  echo [ERROR] PowerShell not found. Please run start_gui.ps1 manually in PowerShell.
   pause
   exit /b 1
 )
 
-echo [INFO] Launching OCR GUI with .venv Python...
-".venv\Scripts\python.exe" "src\ocr_mouse_tester_gui.py"
+powershell -NoProfile -ExecutionPolicy Bypass -File ".\start_gui.ps1"
 set "EXITCODE=%ERRORLEVEL%"
-
-if not "%EXITCODE%"=="0" (
-  echo.
-  echo [ERROR] GUI exited with code %EXITCODE%.
-  pause
-)
-
 exit /b %EXITCODE%

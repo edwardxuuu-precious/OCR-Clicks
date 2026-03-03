@@ -12,6 +12,7 @@ from typing import Iterable
 import pyautogui
 
 from desktop_ocr_tool import DesktopOCRTool, OCRItem
+from project_version import PROJECT_VERSION_LABEL
 
 
 def set_process_dpi_awareness() -> None:
@@ -139,6 +140,7 @@ def build_parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(
         description="Locate target texts from a screenshot and move mouse in a human-like way."
     )
+    p.add_argument("--version", action="version", version=f"%(prog)s {PROJECT_VERSION_LABEL}")
     p.add_argument("--image", required=True, help="Screenshot path to analyze.")
     p.add_argument(
         "--targets",

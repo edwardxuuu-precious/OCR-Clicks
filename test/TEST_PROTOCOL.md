@@ -4,12 +4,21 @@ This document defines the single benchmark standard for optimization iteration t
 
 ## 1. Baseline Asset
 
-- Baseline image: `test/test_capture.png`
+- Baseline default image: `test/test_sample_img/sample_1.png`
+- Active benchmark image set: `sample_1.png` + `sample_2.png`
 - Benchmark config: `test/benchmark_config.json`
 - Ground truth labels: `test/ground_truth.json`
 - Benchmark runner: `test/run_benchmark.py`
 
-All future benchmark runs must use this baseline image unless the protocol version is explicitly updated.
+All future benchmark runs must use this image set unless the protocol version is explicitly updated.
+
+Image storage convention:
+
+1. All benchmark screenshots must be stored under `test/test_sample_img/`.
+2. Naming format: `sample_<index>.png` (example: `sample_1.png`, `sample_2.png`).
+3. Current default baseline image is `sample_1.png`.
+4. `test/benchmark_config.json:image_path` must be equal to top-level `test/ground_truth.json:image_path` (default image).
+5. Additional benchmark images are attached per case using `cases[].image_path`.
 
 ## 1.1 Ground Truth Case Schema
 
@@ -22,6 +31,7 @@ Each case in `test/ground_truth.json` should follow:
 5. `expected_texts`: one or more accepted OCR outputs for accuracy judgment
 6. `expected_center`: expected click center `[x, y]`
 7. `tolerance_px`: position tolerance in pixels
+8. `image_path` (optional): override image path for this case; if absent, use top-level `image_path`
 
 For Chinese-heavy screenshots, always provide Chinese entries with `lang: "zh"` and Chinese `query_texts` / `expected_texts`.
 `query_texts[0]` is treated as the primary OCR-stage early-stop target; the rest are matching tolerance variants.
@@ -73,7 +83,12 @@ Iteration comparison metrics (current run vs previous run):
    - Non-GPU machine: tool will automatically fall back to CPU.
 7. Use the same `min_score`, `threshold`, `topk`, and `case_sensitive` values across optimization iterations.
 8. Use the same target list and expected centers from `ground_truth.json`.
-9. Do not change the image during a benchmark campaign.
+9. Do not change the benchmark image set during a benchmark campaign.
+
+Current regression-focused cases:
+
+1. `sample2_search_placeholder_en`: validates low-contrast placeholder `Search` detection in YouTube top toolbar.
+2. `sample2_free_keyword_zh`: validates `免费` matching while avoiding same-sentence fragment duplication.
 
 Command:
 
@@ -97,8 +112,10 @@ Each run directory contains:
 
 1. `benchmark_config_snapshot.json`: exact config used
 2. `results.json`: full structured results
-3. `raw_runs.csv`: per-run raw OCR and accuracy metrics
-4. `summary.md`: quick human-readable summary
+3. `raw_runs.csv`: per-sample per-run OCR and accuracy metrics
+4. `raw_runs_overall.csv`: overall per-run OCR and accuracy metrics
+5. `case_results.csv`: per-case per-run records (includes sample/image mapping)
+6. `summary.md`: quick human-readable summary
 
 `results.json` includes `ground_truth_signature`.  
 Iteration comparison is only executed when baseline and current signatures are identical.

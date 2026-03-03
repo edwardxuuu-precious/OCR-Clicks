@@ -1,0 +1,10 @@
+{
+  "version": "20260303.007",
+  "label": "v20260303.007",
+  "version_date": "2026-03-03",
+  "version_index": 7,
+  "released_at": "2026-03-03T12:25:22+08:00",
+  "source_commit": "b544f9d",
+  "timezone": "Asia/Shanghai",
+  "notes": "Finalize detailed changelog entry and publish latest benchmark rerun records."
+}

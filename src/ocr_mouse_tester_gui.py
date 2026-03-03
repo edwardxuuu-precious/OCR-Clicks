@@ -18,6 +18,13 @@ import tkinter as tk
 from tkinter import filedialog, messagebox, scrolledtext, ttk
 
 from desktop_ocr_tool import DesktopOCRTool, OCRItem
+from project_version import (
+    PROJECT_RELEASED_AT,
+    PROJECT_SOURCE_COMMIT,
+    PROJECT_VERSION,
+    PROJECT_VERSION_INDEX,
+    PROJECT_VERSION_LABEL,
+)
 
 
 class StoppedError(Exception):
@@ -300,9 +307,9 @@ def should_use_strict_verification(
 class OCRMouseTesterGUI:
     def __init__(self, root: tk.Tk) -> None:
         self.root = root
-        self.root.title("OCR Mouse Tester")
-        self.root.geometry("1240x920")
-        self.root.minsize(1040, 760)
+        self.root.title(f"OCR Mouse Tester ({PROJECT_VERSION_LABEL})")
+        self.root.geometry("1200x860")
+        self.root.minsize(980, 700)
 
         self.event_queue: queue.Queue[tuple[str, Any]] = queue.Queue()
         self.worker_thread: threading.Thread | None = None
@@ -314,6 +321,7 @@ class OCRMouseTesterGUI:
         self.ocr_cache_lock = threading.Lock()
         self.runtime_gpu_detected_label: tk.Label | None = None
         self.runtime_gpu_enabled_label: tk.Label | None = None
+        self.bottom_pane: ttk.Panedwindow | None = None
 
         self.status_var = tk.StringVar(value="Idle")
         self.runtime_gpu_detected_var = tk.StringVar(value="-")
@@ -336,8 +344,13 @@ class OCRMouseTesterGUI:
         self.perf_table: ttk.Treeview | None = None
 
         self._build_ui()
+        self.root.after(100, self._set_default_bottom_split)
         self._reset_performance_panel()
         self._refresh_runtime_status(log_event=False, reinit_if_needed=False)
+        self._log(
+            "VERSION",
+            f"project_version={PROJECT_VERSION_LABEL}, released_at={PROJECT_RELEASED_AT}, source_commit={PROJECT_SOURCE_COMMIT}",
+        )
         self.root.after(120, self._drain_events)
 
     def _build_ui(self) -> None:
@@ -392,7 +405,7 @@ class OCRMouseTesterGUI:
 
         target_frame = ttk.LabelFrame(root_frame, text="Targets")
         target_frame.pack(fill=tk.X, padx=2, pady=8)
-        self.targets_text = scrolledtext.ScrolledText(target_frame, height=6, wrap=tk.WORD)
+        self.targets_text = scrolledtext.ScrolledText(target_frame, height=4, wrap=tk.WORD)
         self.targets_text.pack(fill=tk.X, padx=6, pady=6)
         self.targets_text.insert(
             tk.END,
@@ -445,7 +458,7 @@ class OCRMouseTesterGUI:
 
         detail_frame = ttk.Frame(runtime_frame)
         detail_frame.pack(fill=tk.X, padx=6, pady=(0, 6))
-        self.runtime_table = ttk.Treeview(detail_frame, columns=("field", "value"), show="headings", height=4)
+        self.runtime_table = ttk.Treeview(detail_frame, columns=("field", "value"), show="headings", height=3)
         self.runtime_table.heading("field", text="Field")
         self.runtime_table.heading("value", text="Value")
         self.runtime_table.column("field", width=160, minwidth=120, anchor="w", stretch=False)
@@ -458,15 +471,17 @@ class OCRMouseTesterGUI:
 
         perf_frame = ttk.LabelFrame(root_frame, text="Performance")
         perf_frame.pack(fill=tk.X, padx=2, pady=4)
-        self.perf_table = ttk.Treeview(perf_frame, columns=("stage", "value"), show="headings", height=8)
+        self.perf_table = ttk.Treeview(perf_frame, columns=("stage", "value"), show="headings", height=6)
         self.perf_table.heading("stage", text="Stage")
         self.perf_table.heading("value", text="Duration / Info")
         self.perf_table.column("stage", width=220, minwidth=180, anchor="w", stretch=False)
         self.perf_table.column("value", width=860, minwidth=420, anchor="w", stretch=True)
         self.perf_table.pack(fill=tk.X, expand=True, padx=6, pady=6)
 
-        result_frame = ttk.LabelFrame(root_frame, text="Result")
-        result_frame.pack(fill=tk.BOTH, expand=True, padx=2, pady=4)
+        self.bottom_pane = ttk.Panedwindow(root_frame, orient=tk.VERTICAL)
+        self.bottom_pane.pack(fill=tk.BOTH, expand=True, padx=2, pady=4)
+
+        result_frame = ttk.LabelFrame(self.bottom_pane, text="Result")
         columns = (
             "round",
             "target",
@@ -479,7 +494,7 @@ class OCRMouseTesterGUI:
             "ocr_score",
             "circles",
         )
-        self.result_table = ttk.Treeview(result_frame, columns=columns, show="headings", height=10)
+        self.result_table = ttk.Treeview(result_frame, columns=columns, show="headings", height=8)
         for col, width in [
             ("round", 60),
             ("target", 140),
@@ -496,10 +511,11 @@ class OCRMouseTesterGUI:
             self.result_table.column(col, width=width, anchor="w")
         self.result_table.pack(fill=tk.BOTH, expand=True, padx=6, pady=4)
 
-        log_frame = ttk.LabelFrame(root_frame, text="Log")
-        log_frame.pack(fill=tk.BOTH, expand=True, padx=2, pady=4)
-        self.log_text = scrolledtext.ScrolledText(log_frame, height=13, wrap=tk.WORD, state=tk.DISABLED)
+        log_frame = ttk.LabelFrame(self.bottom_pane, text="Log")
+        self.log_text = scrolledtext.ScrolledText(log_frame, height=8, wrap=tk.WORD, state=tk.DISABLED)
         self.log_text.pack(fill=tk.BOTH, expand=True, padx=6, pady=6)
+        self.bottom_pane.add(result_frame, weight=3)
+        self.bottom_pane.add(log_frame, weight=2)
 
         config_frame.grid_columnconfigure(1, weight=1)
         config_frame.grid_columnconfigure(2, weight=0)
@@ -507,6 +523,16 @@ class OCRMouseTesterGUI:
         config_frame.grid_columnconfigure(4, weight=0)
         config_frame.grid_columnconfigure(5, weight=0)
         config_frame.grid_columnconfigure(6, weight=0)
+
+    def _set_default_bottom_split(self) -> None:
+        if self.bottom_pane is None:
+            return
+        try:
+            total_height = self.bottom_pane.winfo_height()
+            if total_height > 120:
+                self.bottom_pane.sashpos(0, int(total_height * 0.58))
+        except Exception:
+            return
 
     def _browse_image(self) -> None:
         path = filedialog.askopenfilename(
@@ -585,6 +611,12 @@ class OCRMouseTesterGUI:
             "schema": "ocr_mouse_tester_gui",
             "version": 1,
             "saved_at": int(time.time()),
+            "saved_at_iso": time.strftime("%Y-%m-%dT%H:%M:%S%z"),
+            "project_version": PROJECT_VERSION,
+            "project_version_label": PROJECT_VERSION_LABEL,
+            "project_version_index": PROJECT_VERSION_INDEX,
+            "project_released_at": PROJECT_RELEASED_AT,
+            "project_source_commit": PROJECT_SOURCE_COMMIT,
             "image_path": self.image_var.get().strip(),
             "targets_raw": raw_targets,
             "targets": targets,
@@ -654,6 +686,15 @@ class OCRMouseTesterGUI:
         self.use_gpu_var.set(bool(params.get("use_gpu", self.use_gpu_var.get())))
         self._ensure_runtime_preference(log_event=False)
         self._refresh_runtime_status(log_event=False, reinit_if_needed=False)
+        cfg_project_version = str(data.get("project_version", "")).strip()
+        if cfg_project_version and cfg_project_version != PROJECT_VERSION:
+            self._log(
+                "VERSION",
+                (
+                    f"Loaded config version={cfg_project_version}, "
+                    f"current_project_version={PROJECT_VERSION}. Please re-save config if needed."
+                ),
+            )
         self._log("CONFIG", f"Loaded config: {Path(in_path).resolve()}")
 
     def _clear_ocr_cache(self) -> None:
