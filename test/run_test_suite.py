@@ -182,7 +182,7 @@ def _evaluate_case(
     )
 
 
-def _run_once(spec: dict[str, Any], *, mode: str) -> dict[str, Any]:
+def _run_once(spec: dict[str, Any], *, mode: str, max_resize_width: int | None = None) -> dict[str, Any]:
     ocr_cfg = dict(spec.get("ocr_config", {}))
     image_path = _resolve(str(spec["image_path"]))
     if not image_path.exists():
@@ -210,6 +210,7 @@ def _run_once(spec: dict[str, Any], *, mode: str) -> dict[str, Any]:
         priority_tile_limit=max(1, int(ocr_cfg.get("priority_tile_limit", 3))),
         scan_max_side_override=ocr_cfg.get("scan_max_side"),
         aggressive_dense_scan=bool(ocr_cfg.get("aggressive_dense_scan", False)),
+        max_resize_width=max_resize_width,
     )
     ocr_sec = max(0.0, time.perf_counter() - ocr_started)
 
@@ -301,13 +302,14 @@ def main() -> None:
     parser.add_argument("--spec", default="test/spec_sample_1.json", help="Spec JSON path.")
     parser.add_argument("--mode", default="auto", help="auto|cpu|gpu")
     parser.add_argument("--out-dir", default="", help="Output directory. Default: test/results/<timestamp>")
+    parser.add_argument("--max-resize-width", type=int, default=None, help="Pre-resize image width for faster OCR (e.g., 1920)")
     args = parser.parse_args()
 
     spec_path = _resolve(str(args.spec))
     spec = _load_json(spec_path)
     mode = _parse_mode(str(args.mode))
 
-    run = _run_once(spec, mode=mode)
+    run = _run_once(spec, mode=mode, max_resize_width=args.max_resize_width)
     payload = {
         "generated_at_utc": datetime.now(timezone.utc).isoformat(),
         "spec_path": str(spec_path),

@@ -343,6 +343,7 @@ class OCRMouseTesterGUI:
         self.max_retries_var = tk.StringVar(value="1")
         self.dry_run_var = tk.BooleanVar(value=False)
         self.strict_mode_var = tk.BooleanVar(value=True)
+        self.smart_optimize_var = tk.BooleanVar(value=True)
         self.perf_table: ttk.Treeview | None = None
 
         self._build_ui()
@@ -590,6 +591,7 @@ class OCRMouseTesterGUI:
             "max_retries": int(self.max_retries_var.get().strip()),
             "dry_run": bool(self.dry_run_var.get()),
             "strict_mode": bool(self.strict_mode_var.get()),
+            "smart_optimize": bool(self.smart_optimize_var.get()),
             "use_gpu": bool(self.use_gpu_var.get()),
         }
         if cfg["circle_min"] < 1 or cfg["circle_max"] < cfg["circle_min"]:
@@ -671,6 +673,7 @@ class OCRMouseTesterGUI:
         self.max_retries_var.set(str(params.get("max_retries", self.max_retries_var.get())))
         self.dry_run_var.set(bool(params.get("dry_run", self.dry_run_var.get())))
         self.strict_mode_var.set(bool(params.get("strict_mode", self.strict_mode_var.get())))
+        self.smart_optimize_var.set(bool(params.get("smart_optimize", self.smart_optimize_var.get())))
 
         raw = data.get("targets_raw")
         targets = data.get("targets", [])
@@ -988,16 +991,27 @@ class OCRMouseTesterGUI:
                 timings["ocr_cache_hit"] = True
                 self.event_queue.put(("log", ("OCR", f"Cache hit: reuse {len(items)} OCR items.")))
             else:
-                self.event_queue.put(("log", ("OCR", "Running OCR (target-driven)...")))
-                items = tool.run_ocr(
-                    config["image_path"],
-                    screen_left=config["screen_left"],
-                    screen_top=config["screen_top"],
-                    min_score=config["min_score"],
-                    expected_targets=targets,
-                    early_stop_threshold=max(0.45, float(config["threshold"]) - 0.02),
-                    priority_tile_limit=2,
-                )
+                use_smart = bool(config.get("smart_optimize", False))
+                if use_smart:
+                    self.event_queue.put(("log", ("OCR", "Running OCR (smart optimize)...")))
+                    items = tool.run_ocr_smart(
+                        config["image_path"],
+                        screen_left=config["screen_left"],
+                        screen_top=config["screen_top"],
+                        min_score=config["min_score"],
+                        expected_targets=targets,
+                    )
+                else:
+                    self.event_queue.put(("log", ("OCR", "Running OCR (target-driven)...")))
+                    items = tool.run_ocr(
+                        config["image_path"],
+                        screen_left=config["screen_left"],
+                        screen_top=config["screen_top"],
+                        min_score=config["min_score"],
+                        expected_targets=targets,
+                        early_stop_threshold=max(0.45, float(config["threshold"]) - 0.02),
+                        priority_tile_limit=2,
+                    )
                 self._put_cached_ocr(cache_key, items)
                 self.event_queue.put(("log", ("OCR", f"OCR completed: {len(items)} text items.")))
             timings["ocr_sec"] += max(0.0, time.perf_counter() - ocr_stage_started)

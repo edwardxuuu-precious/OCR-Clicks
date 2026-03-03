@@ -45,13 +45,18 @@ class DesktopOCRTool:
         self,
         use_gpu: bool = True,
         center_bias_map: dict[str, list[float] | tuple[float, float]] | None = None,
+        fast_mode: bool = False,
+        det_limit_side_len: int | None = None,
     ) -> None:
         self.use_gpu_requested = bool(use_gpu)
+        self.fast_mode = bool(fast_mode)
         self._center_bias_map: dict[str, tuple[int, int]] = {}
         self._dll_dir_handles: list[Any] = []
         self._bootstrap_windows_gpu_dll_paths()
         self.acceleration_mode, self.available_providers, runtime_kwargs = self._detect_runtime(
-            use_gpu=self.use_gpu_requested
+            use_gpu=self.use_gpu_requested,
+            fast_mode=self.fast_mode,
+            det_limit_side_len=det_limit_side_len,
         )
         self.ocr_engine = RapidOCR(**runtime_kwargs)
         self.set_center_bias_map(center_bias_map or {})
@@ -129,9 +134,22 @@ class DesktopOCRTool:
         return cls._safe_provider_list(component_engine)
 
     @staticmethod
-    def _detect_runtime(*, use_gpu: bool = True) -> tuple[str, list[str], dict[str, Any]]:
+    def _detect_runtime(
+        *,
+        use_gpu: bool = True,
+        fast_mode: bool = False,
+        det_limit_side_len: int | None = None,
+    ) -> tuple[str, list[str], dict[str, Any]]:
         providers: list[str] = []
-        kwargs: dict[str, Any] = {"use_cls": False, "rec_batch_num": 12, "det_limit_side_len": 736}
+        # Fast mode: smaller batch, lower resolution for faster inference
+        if fast_mode:
+            kwargs: dict[str, Any] = {
+                "use_cls": False,
+                "rec_batch_num": 6,
+                "det_limit_side_len": det_limit_side_len or 480,
+            }
+        else:
+            kwargs = {"use_cls": False, "rec_batch_num": 12, "det_limit_side_len": det_limit_side_len or 736}
         mode = "cpu"
         try:
             import onnxruntime as ort
@@ -679,11 +697,30 @@ class DesktopOCRTool:
         priority_tile_limit: int = 3,
         scan_max_side_override: int | None = None,
         aggressive_dense_scan: bool = False,
+        max_resize_width: int | None = None,
     ) -> list[OCRItem]:
         image_path = str(Path(image_path))
         bgr = cv2.imread(image_path)
         if bgr is None:
             raise FileNotFoundError(f"Cannot read image: {image_path}")
+
+        # Pre-resize large images for faster processing (speed vs accuracy trade-off)
+        if max_resize_width is not None and max_resize_width > 0:
+            full_h, full_w = bgr.shape[:2]
+            if full_w > max_resize_width:
+                resize_scale = max_resize_width / full_w
+                new_w = max_resize_width
+                new_h = int(full_h * resize_scale)
+                bgr = cv2.resize(bgr, (new_w, new_h), interpolation=cv2.INTER_AREA)
+                # coord_scale is multiplied with 'scale' in _collect_ocr_items.
+                # inv_scale = 1/(scale * coord_scale) is used to map coordinates back.
+                # To map from resized image back to original, we need inv_scale = 1/resize_scale,
+                # so coord_scale should be resize_scale.
+                coord_scale = resize_scale
+            else:
+                coord_scale = 1.0
+        else:
+            coord_scale = 1.0
 
         targets = [str(t).strip() for t in (expected_targets or []) if str(t).strip()]
         stop_threshold = max(0.30, min(early_stop_threshold, 0.95))
@@ -717,7 +754,7 @@ class DesktopOCRTool:
                 screen_top=screen_top,
                 min_score=min_score,
                 scale=1.0,
-                coord_scale=full_scan_scale,
+                coord_scale=full_scan_scale * coord_scale,
             )
         )
         base_items = self._deduplicate_items(all_items)
@@ -767,6 +804,7 @@ class DesktopOCRTool:
                         screen_top=screen_top,
                         min_score=min_score,
                         scale=1.30,
+                        coord_scale=coord_scale,
                         offset_x=x,
                         offset_y=y,
                     )
@@ -798,6 +836,7 @@ class DesktopOCRTool:
                                 screen_top=screen_top,
                                 min_score=cjk_min_score,
                                 scale=pass_scale,
+                                coord_scale=coord_scale,
                                 offset_x=0,
                                 offset_y=0,
                             )
@@ -829,6 +868,7 @@ class DesktopOCRTool:
                                 screen_top=screen_top,
                                 min_score=toolbar_min_score,
                                 scale=pass_scale,
+                                coord_scale=coord_scale,
                                 offset_x=0,
                                 offset_y=0,
                             )
@@ -869,6 +909,7 @@ class DesktopOCRTool:
                                     screen_top=screen_top,
                                     min_score=dense_min_score,
                                     scale=pass_scale,
+                                    coord_scale=coord_scale,
                                     offset_x=x,
                                     offset_y=y,
                                 )
@@ -893,7 +934,7 @@ class DesktopOCRTool:
                 screen_top=screen_top,
                 min_score=min_score,
                 scale=1.12,
-                coord_scale=full_scan_scale,
+                coord_scale=full_scan_scale * coord_scale,
             )
         )
 
@@ -903,6 +944,68 @@ class DesktopOCRTool:
         # Deterministic ordering keeps output stable for testing.
         items.sort(key=lambda x: (x.top, x.left))
         return items
+
+    def run_ocr_smart(
+        self,
+        image_path: str | Path,
+        *,
+        screen_left: int = 0,
+        screen_top: int = 0,
+        min_score: float = 0.35,
+        expected_targets: Iterable[str] | None = None,
+    ) -> list[OCRItem]:
+        """Smart OCR mode that auto-tunes parameters based on image size and targets.
+        
+        Optimizes for speed without sacrificing accuracy by:
+        1. Using target-driven mode when targets are provided
+        2. Adjusting scan_max_side to minimize internal rescaling
+        3. Limiting priority_tile_limit to reduce redundant ROI scans
+        4. Keeping original image resolution to preserve accuracy
+        """
+        image_path = str(Path(image_path))
+        bgr = cv2.imread(image_path)
+        if bgr is None:
+            raise FileNotFoundError(f"Cannot read image: {image_path}")
+        
+        full_h, full_w = bgr.shape[:2]
+        max_side = max(full_w, full_h)
+        targets = [str(t).strip() for t in (expected_targets or []) if str(t).strip()]
+        has_targets = len(targets) > 0
+        
+        # Auto-tune parameters based on image size
+        # Goal: minimize internal rescaling while keeping accuracy
+        if max_side > 4000:
+            # Very large screenshot (4K+): larger scan side to avoid downscaling
+            scan_max_side = 3200
+            priority_limit = 2 if has_targets else 3
+        elif max_side > 3000:
+            # Large screenshot (3K-4K): balanced
+            scan_max_side = 2880
+            priority_limit = 1 if has_targets else 2
+        elif max_side > 2000:
+            # Medium screenshot (2K-3K): standard
+            scan_max_side = 2560
+            priority_limit = 1 if has_targets else 2
+        else:
+            # Small screenshot (<2K): minimal rescaling
+            scan_max_side = 2048
+            priority_limit = 1 if has_targets else 2
+        
+        # Higher early stop threshold for faster target matching when we have targets
+        # This stops early when all targets are found, without scanning everything
+        early_stop = 0.58 if has_targets else 0.56
+        
+        return self.run_ocr(
+            image_path,
+            screen_left=screen_left,
+            screen_top=screen_top,
+            min_score=min_score,
+            expected_targets=targets if has_targets else None,
+            early_stop_threshold=early_stop,
+            priority_tile_limit=priority_limit,
+            scan_max_side_override=scan_max_side,
+            aggressive_dense_scan=False,
+        )
 
     def verify_match_in_roi(
         self,
