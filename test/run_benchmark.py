@@ -132,11 +132,7 @@ def _is_text_match(match_text: str, expected_texts: list[str]) -> tuple[bool, st
         expected_norm = _normalize_text(expected)
         if not expected_norm:
             continue
-        if (
-            expected_norm == match_norm
-            or expected_norm in match_norm
-            or match_norm in expected_norm
-        ):
+        if expected_norm == match_norm or expected_norm in match_norm:
             return True, expected
     return False, ""
 
@@ -305,6 +301,7 @@ def _run_once_single_image(
                 threshold=threshold,
                 case_sensitive=case_sensitive,
                 topk=topk,
+                exact_only=True,
                 preindexed_items=match_index,
             )
             if not matches:

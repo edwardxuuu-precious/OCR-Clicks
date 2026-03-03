@@ -1,10 +1,10 @@
 {
-  "version": "20260303.007",
-  "label": "v20260303.007",
+  "version": "20260303.010",
+  "label": "v20260303.010",
   "version_date": "2026-03-03",
-  "version_index": 7,
-  "released_at": "2026-03-03T12:25:22+08:00",
-  "source_commit": "b544f9d",
+  "version_index": 10,
+  "released_at": "2026-03-03T14:00:23+08:00",
+  "source_commit": "532553e",
   "timezone": "Asia/Shanghai",
-  "notes": "Finalize detailed changelog entry and publish latest benchmark rerun records."
+  "notes": "Switch to exact-only matching and remove alias/semantic containment matching across GUI, CLI, and benchmark."
 }

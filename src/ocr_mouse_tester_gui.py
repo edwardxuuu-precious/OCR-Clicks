@@ -190,6 +190,7 @@ def locate_candidate_matches(
                 threshold=th,
                 topk=max(topk * 2, 8),
                 case_sensitive=False,
+                exact_only=True,
                 preindexed_items=match_index,
             )
         )
@@ -226,6 +227,7 @@ def verify_candidate_matches(
             min_score=max(0.25, min_score - 0.08),
             threshold=max(0.50, threshold - 0.04),
             topk=1,
+            exact_only=True,
         )
         if not verified:
             continue
@@ -1077,7 +1079,11 @@ class OCRMouseTesterGUI:
                                         verify_topk=max(2, min(4, int(config["topk"]))),
                                     )
                                     if strict_matches:
-                                        best_matches = strict_matches
+                                        best_matches = []
+                                        for m in strict_matches:
+                                            payload = dict(m)
+                                            payload["query_text"] = target
+                                            best_matches.append(payload)
                                         attempt_used = attempt
                                         self.event_queue.put(
                                             (
@@ -1086,6 +1092,7 @@ class OCRMouseTesterGUI:
                                                     "VERIFY",
                                                     (
                                                         f"strict applied ({strict_reason}), "
+                                                        f"query='{target}', "
                                                         f"kept {len(best_matches)} candidates"
                                                     ),
                                                 ),
@@ -1108,6 +1115,7 @@ class OCRMouseTesterGUI:
                                         payload = dict(m)
                                         payload["source"] = "ocr-fast"
                                         payload["strict_reason"] = strict_reason
+                                        payload["query_text"] = target
                                         best_matches.append(payload)
                                     attempt_used = attempt
                                     self.event_queue.put(
@@ -1115,12 +1123,13 @@ class OCRMouseTesterGUI:
                                             "log",
                                             (
                                                 "VERIFY",
-                                                (
-                                                    f"strict skipped ({strict_reason}), "
-                                                    f"use fast candidates={len(best_matches)}"
+                                                    (
+                                                        f"strict skipped ({strict_reason}), "
+                                                        f"query='{target}', "
+                                                        f"use fast candidates={len(best_matches)}"
+                                                    ),
                                                 ),
-                                            ),
-                                        )
+                                            )
                                     )
                                     timings["search_sec"] += max(0.0, time.perf_counter() - search_started)
                                     break
@@ -1140,6 +1149,7 @@ class OCRMouseTesterGUI:
                                 for m in plain_matches:
                                     payload = dict(m)
                                     payload["source"] = "ocr"
+                                    payload["query_text"] = target
                                     best_matches.append(payload)
                                 attempt_used = attempt
                                 timings["search_sec"] += max(0.0, time.perf_counter() - search_started)
@@ -1187,6 +1197,7 @@ class OCRMouseTesterGUI:
 
                         x, y = best["center"]
                         match_source = str(best.get("source", "ocr"))
+                        query_text = str(best.get("query_text", target))
                         circles = random.randint(config["circle_min"], config["circle_max"])
                         self.event_queue.put(
                             (
@@ -1197,7 +1208,7 @@ class OCRMouseTesterGUI:
                                         f"[round {round_index}] {target} ({hit_idx}/{total_hits}) -> "
                                         f"'{best['match_text']}' at ({x},{y}), "
                                         f"match={best['match_score']:.3f}, ocr={best['ocr_score']:.3f}, "
-                                        f"attempt={attempt_used}, source={match_source}"
+                                        f"attempt={attempt_used}, source={match_source}, query='{query_text}'"
                                     ),
                                 ),
                             )

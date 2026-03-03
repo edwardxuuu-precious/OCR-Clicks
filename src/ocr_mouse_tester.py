@@ -130,7 +130,7 @@ def locate_best_match(
 ) -> dict | None:
     threshold_levels = [threshold, max(0.45, threshold - 0.1), 0.36]
     for th in threshold_levels:
-        matches = tool.find_text(items, target, threshold=th, topk=topk, case_sensitive=False)
+        matches = tool.find_text(items, target, threshold=th, topk=topk, case_sensitive=False, exact_only=True)
         if matches:
             return matches[0]
     return None

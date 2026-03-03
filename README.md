@@ -1,4 +1,4 @@
-# OCR Desktop Automation Toolkit
+﻿# OCR Desktop Automation Toolkit
 
 Repository: https://github.com/edwardxuuu-precious/OCR-Clicks.git
 
@@ -210,3 +210,29 @@ pip install onnxruntime-directml
 - 实际模式会移动并点击鼠标。
 - 调试阶段建议先开启 `Dry Run`。
 - `pyautogui` 角落防护（FailSafe）触发时会中止执行。
+
+## Exact Match Policy
+
+Runtime lookup is exact-match only:
+
+- no alias expansion
+- no semantic containment
+- no fuzzy similarity click
+
+A candidate is accepted only when literal text matches after normalization:
+- normalized exact equality, or
+- normalized literal substring containment.
+
+## Benchmark Sample Set
+
+Current active benchmark sample set:
+
+- `test/test_sample_img/sample_1.png`
+- `test/test_sample_img/sample_2.png`
+- `test/test_sample_img/sample_3.png`
+
+Benchmark protocol and baseline:
+
+- `test/TEST_PROTOCOL.md`
+- `test/BASELINE.md`
+

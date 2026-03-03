@@ -162,8 +162,18 @@ class DesktopOCRTool:
             )
             return mode, providers, kwargs
 
-        cpu_count = os.cpu_count() or 4
-        kwargs["intra_op_num_threads"] = max(1, min(12, cpu_count))
+        cpu_count = max(1, os.cpu_count() or 4)
+        # Empirically, too many CPU threads hurts latency for this OCR workload.
+        # Keep a moderate thread count to reduce scheduling overhead.
+        if cpu_count >= 16:
+            tuned_threads = 8
+        elif cpu_count >= 10:
+            tuned_threads = 6
+        elif cpu_count >= 6:
+            tuned_threads = 4
+        else:
+            tuned_threads = max(1, cpu_count - 1)
+        kwargs["intra_op_num_threads"] = tuned_threads
         kwargs["inter_op_num_threads"] = 1
         return mode, providers, kwargs
 
@@ -453,6 +463,7 @@ class DesktopOCRTool:
                 threshold=threshold,
                 topk=1,
                 case_sensitive=False,
+                exact_only=True,
                 preindexed_items=match_index,
             )
             if not matches:
@@ -803,6 +814,7 @@ class DesktopOCRTool:
         min_score: float = 0.30,
         threshold: float = 0.55,
         topk: int = 1,
+        exact_only: bool = False,
     ) -> dict[str, Any] | None:
         if image is None or image.size == 0:
             return None
@@ -842,7 +854,14 @@ class DesktopOCRTool:
         dedup = self._deduplicate_items(local_items)
         if not dedup:
             return None
-        matches = self.find_text(dedup, target_text, threshold=threshold, topk=topk, case_sensitive=False)
+        matches = self.find_text(
+            dedup,
+            target_text,
+            threshold=threshold,
+            topk=topk,
+            case_sensitive=False,
+            exact_only=exact_only,
+        )
         if not matches:
             return None
         return matches[0]
@@ -855,6 +874,7 @@ class DesktopOCRTool:
         threshold: float = 0.6,
         case_sensitive: bool = False,
         topk: int = 5,
+        exact_only: bool = False,
         preindexed_items: list[dict[str, Any]] | None = None,
     ) -> list[dict[str, Any]]:
         if not case_sensitive:
@@ -888,36 +908,48 @@ class DesktopOCRTool:
             candidate_first = str(entry.get("candidate_first", ""))
             contains_target = bool(target) and (target in candidate)
             contains_target_norm = bool(target_norm) and (target_norm in candidate_norm)
+            exact_equal = bool(target) and candidate == target
+            exact_norm_equal = bool(target_norm) and candidate_norm == target_norm
 
-            # For short CJK targets (single/dual char), fuzzy similarity causes many false positives.
-            # Enforce literal containment to keep click coordinates reliable.
-            if is_short_cjk_target and not contains_target_norm:
-                continue
-
-            # Cheap pre-filter: avoid costly fuzzy scoring for obviously unrelated strings.
-            if not is_short_cjk_target and not contains_target and not contains_target_norm:
-                len_gap = abs(len_target - max(1, candidate_len))
-                max_len_gap = max(4, int(len_target * 0.85))
-                if len_gap > max_len_gap:
+            if exact_only:
+                literal_contains = bool(target_norm) and (target_norm in candidate_norm)
+                if not (exact_equal or exact_norm_equal or literal_contains):
                     continue
-                if target_first and candidate_first and target_first != candidate_first:
-                    continue
-
-            exact_bonus = 1.0 if candidate == target else 0.0
-            exact_norm_bonus = 0.35 if target_norm and candidate_norm == target_norm else 0.0
-            contains_bonus = 0.22 if contains_target else 0.0
-            contains_norm_bonus = 0.15 if contains_target_norm else 0.0
-            similarity = SequenceMatcher(None, target_cmp, candidate_cmp).ratio()
-            len_cand = max(1, candidate_len)
-            if is_short_cjk_target:
-                length_penalty = 0.0
+                final_score = 2.0 if (exact_equal or exact_norm_equal) else 1.85
             else:
-                length_penalty = min(0.28, abs(len_target - len_cand) / len_target * 0.22)
-            final_score = similarity + contains_bonus + (0.2 * exact_bonus)
-            final_score += exact_norm_bonus + contains_norm_bonus
-            final_score -= length_penalty
-            if final_score < threshold:
-                continue
+                # For short CJK targets (single/dual char), fuzzy similarity causes many false positives.
+                # Enforce literal containment to keep click coordinates reliable.
+                if is_short_cjk_target and not contains_target_norm:
+                    continue
+
+                # Cheap pre-filter: avoid costly fuzzy scoring for obviously unrelated strings.
+                if not is_short_cjk_target and not contains_target and not contains_target_norm:
+                    len_gap = abs(len_target - max(1, candidate_len))
+                    max_len_gap = max(4, int(len_target * 0.85))
+                    if len_gap > max_len_gap:
+                        continue
+                    if target_first and candidate_first and target_first != candidate_first:
+                        continue
+
+                exact_bonus = 1.0 if exact_equal else 0.0
+                exact_norm_bonus = 0.35 if exact_norm_equal else 0.0
+                contains_bonus = 0.22 if contains_target else 0.0
+                contains_norm_bonus = 0.15 if contains_target_norm else 0.0
+                similarity = SequenceMatcher(None, target_cmp, candidate_cmp).ratio()
+                if is_short_cjk_target and contains_target_norm:
+                    # For short CJK tokens, long-line OCR segments are common.
+                    # Keep strict literal containment, but avoid scoring them too low.
+                    similarity = max(similarity, 0.30)
+                len_cand = max(1, candidate_len)
+                if is_short_cjk_target:
+                    length_penalty = 0.0
+                else:
+                    length_penalty = min(0.28, abs(len_target - len_cand) / len_target * 0.22)
+                final_score = similarity + contains_bonus + (0.2 * exact_bonus)
+                final_score += exact_norm_bonus + contains_norm_bonus
+                final_score -= length_penalty
+                if final_score < threshold:
+                    continue
 
             raw_match = {
                 "target": target_text,
@@ -1016,6 +1048,7 @@ def main() -> None:
             threshold=args.threshold,
             topk=args.topk,
             case_sensitive=args.case_sensitive,
+            exact_only=True,
         )
         payload = {
             "query": args.text,

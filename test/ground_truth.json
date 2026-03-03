@@ -156,12 +156,23 @@
       "id": "sample2_free_keyword_zh",
       "lang": "zh",
       "image_path": "test/test_sample_img/sample_2.png",
-      "target": "免费",
-      "query_texts": ["免费"],
+      "target": "免费试看",
+      "query_texts": ["免费试看"],
       "expected_text": "免费试看",
-      "expected_texts": ["免费试看", "免费"],
+      "expected_texts": ["免费试看"],
       "expected_center": [2490, 1305],
       "tolerance_px": 90
+    },
+    {
+      "id": "sample3_contact_exact_en",
+      "lang": "en",
+      "image_path": "test/test_sample_img/sample_3.png",
+      "target": "etin Fandi",
+      "query_texts": ["etin Fandi"],
+      "expected_text": "etin Fandi",
+      "expected_texts": ["etin Fandi"],
+      "expected_center": [2075, 1319],
+      "tolerance_px": 120
     }
   ]
 }

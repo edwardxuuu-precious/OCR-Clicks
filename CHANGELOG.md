@@ -6,6 +6,123 @@ This repository uses a timestamp + index version format:
 - Source of truth: `VERSION.json`
 - Label format: `vYYYYMMDD.NNN`
 
+## [v20260303.010] - 2026-03-03T14:00:23+08:00
+
+### Version Metadata
+- version: `20260303.010`
+- index: `010`
+- version_date: `2026-03-03`
+- source_commit: `532553e`
+- timezone: `Asia/Shanghai`
+
+### Detailed Change Scope
+- Matching policy switched to exact-only across runtime paths:
+  - no alias expansion
+  - no semantic containment matching
+  - no partial-text click acceptance
+- Core engine:
+  - `src/desktop_ocr_tool.py`
+    - add `exact_only` parameter to `find_text`
+    - add `exact_only` parameter to `verify_match_in_roi`
+    - runtime `find` command now enforces exact-only
+    - missing-target resolution in target-driven OCR uses exact-only
+- GUI runtime:
+  - `src/ocr_mouse_tester_gui.py`
+    - search path now only queries the target itself
+    - strict verification now runs exact-only
+    - removed alias expansion code path
+- CLI runtime:
+  - `src/ocr_mouse_tester.py`
+    - removed alias expansion flow
+    - target lookup now exact-only
+- Benchmark/runtime docs:
+  - `test/ground_truth.json` updated to exact-text cases for `sample_2` and `sample_3`
+  - `test/TEST_PROTOCOL.md` rewritten as exact-match standard
+  - `AGENTS.md` replaced alias rule with exact-match rule
+  - `README.md` updated with exact-match policy
+  - removed `target_aliases.json`
+
+### Benchmark Rerun (Exact-Match Mode)
+- result folder: `test/results/20260303_061431`
+- overall:
+  - `mean_ocr_sec = 38.4500`
+  - `found_rate = 1.0000`
+  - `text_accuracy = 1.0000`
+  - `position_accuracy = 1.0000`
+- regression cases:
+  - `sample2_search_placeholder_en`: 5/5 pass
+  - `sample2_free_keyword_zh`: 5/5 pass (`match_text=【免费试看】`)
+  - `sample3_contact_exact_en`: 5/5 pass (`match_text=etin Fandi`)
+
+## [v20260303.009] - 2026-03-03T13:34:02+08:00
+
+### Version Metadata
+- version: `20260303.009`
+- index: `009`
+- version_date: `2026-03-03`
+- source_commit: `532553e`
+- timezone: `Asia/Shanghai`
+
+### Detailed Change Scope
+- New regression asset and case:
+  - add `test/test_sample_img/sample_3.png`
+  - add `sample3_contact_alias_zh` to `test/ground_truth.json` for `张泽` mixed-language retrieval
+- Root-cause fix for `张泽` miss in GUI:
+  - OCR on this screenshot does not reliably output `张泽`; it outputs `Fandi` / `梵迪 Fandi`
+  - add target alias query expansion in `src/ocr_mouse_tester_gui.py`
+  - add repo-level alias mapping file `target_aliases.json` and runtime loader
+- System-wide alias consistency:
+  - add the same alias resolution flow to CLI path in `src/ocr_mouse_tester.py`
+- Protocol and baseline documentation broadcast:
+  - `test/TEST_PROTOCOL.md`: active sample set expanded to `sample_1~sample_3`, add alias regression rules
+  - `test/BASELINE.md`: update baseline to latest run
+  - `AGENTS.md`: add mandatory alias broadcast rule and execution checklist
+
+### Benchmark Rerun (All Active Samples)
+- result folder: `test/results/20260303_053419`
+- images: `sample_1.png`, `sample_2.png`, `sample_3.png`
+- overall:
+  - `mean_ocr_sec = 45.0764`
+  - `found_rate = 1.0000`
+  - `text_accuracy = 1.0000`
+  - `position_accuracy = 1.0000`
+- regression cases:
+  - `sample2_search_placeholder_en`: 5/5 found, text_ok
+  - `sample2_free_keyword_zh`: 5/5 found, text_ok
+  - `sample3_contact_alias_zh`: 5/5 found, text_ok (`match_text=etin Fandi`)
+- comparison vs previous run (`test/results/20260303_052701`):
+  - `delta_ocr_sec = +0.4212` (`+0.94%`, slightly slower)
+  - accuracy guardrails unchanged (`1.0000`)
+
+## [v20260303.008] - 2026-03-03T12:57:16+08:00
+
+### Version Metadata
+- version: `20260303.008`
+- index: `008`
+- version_date: `2026-03-03`
+- source_commit: `b544f9d`
+- timezone: `Asia/Shanghai`
+
+### Highlights
+- Performance optimization focused on CPU runtime tuning in `src/desktop_ocr_tool.py`:
+  - keep target-driven scan fidelity (`scan_max_side=2048`) to preserve recognition accuracy
+  - tune ONNXRuntime CPU threading defaults to reduce overhead:
+    - `>=16 cores -> 8 threads`
+    - `>=10 cores -> 6 threads`
+    - `>=6 cores -> 4 threads`
+    - otherwise `max(1, cpu_count-1)`
+- Validation benchmark run:
+  - result folder: `test/results/20260303_045352`
+  - `mean_ocr_sec = 34.7783`
+  - `found_rate = 1.0000`
+  - `text_accuracy = 1.0000`
+  - `position_accuracy = 1.0000`
+- Against the latest stable full-accuracy baseline (`test/results/20260303_041011`, `mean_ocr_sec=52.6219`):
+  - `delta_ocr_sec = -17.8436`
+  - improvement `-33.91%`
+  - speedup `1.513x`
+  - accuracy guardrails unchanged at `1.0000`
+
 ## [v20260303.007] - 2026-03-03T12:25:22+08:00
 
 ### Version Metadata
